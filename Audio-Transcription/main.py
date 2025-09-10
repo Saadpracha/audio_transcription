@@ -7,7 +7,7 @@ import time
 import psutil
 
 # Limit CPU threads to avoid overload
-torch.set_num_threads(1)
+torch.set_num_threads(2)
 
 # Load model once and keep it in memory
 model = whisperx.load_model("small", device="cpu", compute_type="int8")
