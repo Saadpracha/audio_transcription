@@ -63,7 +63,7 @@ class AudioTranscriberWithDiarization:
         result = self.model.transcribe(
             audio_path, 
             language=language,
-            batch_size=8,
+            batch_size=16,
         )
 
         duration = time.time() - start_time
