@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 import argparse
 import json
@@ -213,7 +212,7 @@ def main():
         print(f"[INFO] Saved speaker summary to: {summary_path}")
 
     transcriber.cleanup()
-    print("\n✅ All done!")
+    print("\n✅ All done!!")
 
 
 if __name__ == "__main__":
