@@ -1,3 +1,22 @@
-openai-whisper
-git+https://github.com/m-bain/whisperx.git
+pip install git+https://github.com/m-bain/whisperX.git
+python-dotenv
 psutil
+fastapi
+uvicorn[standard]
+boto3
+openai
+requests
+python-multipart
+# torch==1.10.0
+# torchaudio==0.10.0
+# pyannote.audio==0.0.1
+# speechbrain==0.5.14
+
+
+# Note: whisperx automatically installs all required dependencies including:
+# - torch, torchaudio (PyTorch ecosystem)
+# - pyannote.audio, pyannote.core (for diarization)
+# - soundfile, librosa (audio processing)
+# - transformers, tokenizers (NLP models)
+# - numpy, scipy (numerical computing)
+# - and many other dependencies

@@ -10,6 +10,7 @@ from typing import Optional, Dict, List
 
 import whisperx
 import torch
+import psutil
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
 from pyannote.audio.pipelines.utils.hook import ProgressHook
@@ -28,7 +29,6 @@ class AudioTranscriberWithDiarization:
         load_dotenv()
 
     def load_models(self):
-        # Load WhisperX model
         if self.model is None:
             print(f"[INFO] Loading Whisper model ({self.model_size}) on {self.device}...")
             self.model = whisperx.load_model(
@@ -38,7 +38,6 @@ class AudioTranscriberWithDiarization:
             )
             print("[INFO] Whisper model loaded.")
 
-        # Load pyannote speaker diarization model v3.1
         if self.diarization_pipeline is None:
             print("[INFO] Loading speaker diarization model (v3.1)...")
             token = os.getenv("HUGGINGFACE_TOKEN")
@@ -115,12 +114,14 @@ class AudioTranscriberWithDiarization:
         return transcription
 
     def save_transcription(self, result: dict, output_path: str):
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        dir_path = os.path.dirname(output_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         print(f"[INFO] Saved full transcript to: {output_path}")
 
-    def generate_speaker_summary(self, enhanced_transcription: dict) -> Dict[str, List[dict]]:
+    def generate_speaker_summary(self, enhanced_transcription: dict) -> Dict[str, object]:
         speaker_summary = {}
         for segment in enhanced_transcription.get("segments", []):
             speaker = segment.get("speaker", "Unknown")
@@ -131,7 +132,24 @@ class AudioTranscriberWithDiarization:
                 "end": segment["end"],
                 "text": segment["text"].strip()
             })
-        return speaker_summary
+
+        # Overall audio duration
+        total_duration = 0.0
+        if enhanced_transcription.get("segments"):
+            total_duration = enhanced_transcription["segments"][-1]["end"]
+
+        # Resource usage
+        process = psutil.Process(os.getpid())
+        cpu_percent = process.cpu_percent(interval=0.1)
+        memory_info = process.memory_info()
+        max_memory_mb = memory_info.rss / (1024 * 1024)
+
+        return {
+            "total_duration_seconds": round(total_duration, 2),
+            "max_cpu_percent": cpu_percent,
+            "max_memory_usage_mb": round(max_memory_mb, 2),
+            "speakers": speaker_summary
+        }
 
     def cleanup(self):
         del self.model
@@ -159,7 +177,9 @@ def generate_output_path(audio_path: str, custom_output: Optional[str]) -> str:
     if custom_output:
         return custom_output
     base = Path(audio_path).stem
-    return os.path.join("output", f"{base}_diarized.json")
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, f"{base}_diarized.json")
 
 
 def main():
@@ -181,19 +201,15 @@ def main():
         num_threads=args.threads
     )
 
-    # Transcribe
     transcription = transcriber.transcribe_audio(args.audio_file, args.language)
 
-    # Diarize
     speaker_segments = []
     if not args.no_diarization:
         speaker_segments = transcriber.perform_diarization(args.audio_file)
 
-    # Align speakers
     if speaker_segments:
         transcription = transcriber.align_transcription_with_speakers(transcription, speaker_segments)
 
-    # Add metadata
     transcription["metadata"] = {
         "model": args.model,
         "language": args.language,
@@ -201,10 +217,8 @@ def main():
         "speakers_detected": len(set(seg["speaker"] for seg in speaker_segments)) if speaker_segments else 0
     }
 
-    # Save full transcript
     transcriber.save_transcription(transcription, output_path)
 
-    # Save summary if requested
     if args.summary and speaker_segments:
         summary = transcriber.generate_speaker_summary(transcription)
         summary_path = output_path.replace(".json", "_summary.json")
