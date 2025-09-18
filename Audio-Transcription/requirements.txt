@@ -1,4 +1,4 @@
-pip install git+https://github.com/m-bain/whisperX.git
+git+https://github.com/m-bain/whisperX.git
 python-dotenv
 psutil
 fastapi
