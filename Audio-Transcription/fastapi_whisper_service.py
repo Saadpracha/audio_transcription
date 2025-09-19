@@ -231,6 +231,15 @@ def upload_to_s3(local_path: Path, s3_key: str) -> str:
     s3 = get_s3_client()
     logger.info("Uploading %s to s3://%s/%s", local_path, S3_BUCKET, s3_key)
     
+    # Determine content type based on file extension
+    file_ext = local_path.suffix.lower()
+    if file_ext in ['.wav', '.mp3', '.m4a', '.ogg']:
+        content_type = 'audio/wav' if file_ext == '.wav' else f'audio/{file_ext[1:]}'
+    elif file_ext == '.json':
+        content_type = 'application/json'
+    else:
+        content_type = 'application/octet-stream'
+    
     # Upload file with public read access
     s3.upload_file(
         str(local_path), 
@@ -238,7 +247,7 @@ def upload_to_s3(local_path: Path, s3_key: str) -> str:
         s3_key,
         ExtraArgs={
             'ACL': 'public-read',
-            'ContentType': 'application/octet-stream'
+            'ContentType': content_type
         }
     )
     
@@ -409,9 +418,35 @@ def process_job(job_id: str, payload: dict):
                     else:
                         lines.append(f"{speaker}: {text}")
                 transcript_text = "\n".join(lines) if lines else json.dumps(transcript_json)[:15000]
-                # Cap length to avoid oversized payloads
-                if len(transcript_text) > 15000:
-                    transcript_text = transcript_text[:14990] + "..."
+                
+                # Add S3 file links to the note body
+                s3_links = []
+                if jobs[job_id].get("audio_s3_url"):
+                    s3_links.append(f"Audio: {jobs[job_id]['audio_s3_url']}")
+                if jobs[job_id].get("transcript_s3_url"):
+                    s3_links.append(f"Transcript: {jobs[job_id]['transcript_s3_url']}")
+                if jobs[job_id].get("summary_s3_url"):
+                    s3_links.append(f"Summary: {jobs[job_id]['summary_s3_url']}")
+                if jobs[job_id].get("call_to_action_s3_url"):
+                    s3_links.append(f"Call to Action: {jobs[job_id]['call_to_action_s3_url']}")
+                
+                # Combine transcript with S3 links
+                if s3_links:
+                    s3_section = "\n\n--- S3 Files ---\n" + "\n".join(s3_links)
+                    full_note_body = transcript_text + s3_section
+                else:
+                    full_note_body = transcript_text
+                
+                # Cap length to avoid oversized payloads (leave room for S3 links)
+                if len(full_note_body) > 15000:
+                    # Truncate transcript but keep S3 links
+                    if s3_links:
+                        s3_section = "\n\n--- S3 Files ---\n" + "\n".join(s3_links)
+                        max_transcript_length = 15000 - len(s3_section) - 100  # buffer
+                        truncated_transcript = transcript_text[:max_transcript_length] + "..."
+                        full_note_body = truncated_transcript + s3_section
+                    else:
+                        full_note_body = transcript_text[:14990] + "..."
 
                 url = f"{LEADCONNECTOR_BASE_URL}/contacts/{contact_id}/notes"
                 headers = {
@@ -419,7 +454,7 @@ def process_job(job_id: str, payload: dict):
                     "Version": "2021-07-28",
                     "Content-Type": "application/json",
                 }
-                payload_body = {"body": transcript_text or "(empty transcript)"}
+                payload_body = {"body": full_note_body or "(empty transcript)"}
                 try:
                     resp = requests.post(url, headers=headers, json=payload_body, timeout=30)
                     jobs[job_id]["crm_note_status_code"] = resp.status_code
