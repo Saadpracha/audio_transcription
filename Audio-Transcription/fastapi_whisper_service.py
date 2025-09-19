@@ -296,6 +296,10 @@ def process_job(job_id: str, payload: dict):
     logger.info("Job %s started (simple mode)", job_id)
     jobs[job_id] = {"status": "started", "created_at": time.time(), "payload": payload}
 
+    local_path = None
+    run_output_dir = None
+    transcript_path = None
+
     try:
         audio_url = payload.get("audio")
         if not audio_url:
@@ -384,16 +388,6 @@ def process_job(job_id: str, payload: dict):
             jobs[job_id]["call_to_action_s3_url"] = call_to_action_s3_url
             jobs[job_id]["call_to_action_s3_key"] = call_to_action_s3_key
 
-        # Clean up local temporary files
-        try:
-            if local_path.exists():
-                local_path.unlink()
-            if run_output_dir.exists():
-                shutil.rmtree(run_output_dir)
-            logger.info("Cleaned up local temporary files")
-        except Exception as cleanup_ex:
-            logger.warning("Failed to clean up local files: %s", cleanup_ex)
-
         # Attempt to send transcription note to CRM using contact_id (if provided)
         try:
             if contact_id and LEADCONNECTOR_ACCESS_TOKEN:
@@ -454,6 +448,16 @@ def process_job(job_id: str, payload: dict):
         logger.exception("Job %s failed: %s", job_id, e)
         jobs[job_id]["status"] = "error"
         jobs[job_id]["error"] = str(e)
+    finally:
+        # Clean up local temporary files and working directory regardless of outcome
+        try:
+            if local_path and isinstance(local_path, Path) and local_path.exists():
+                local_path.unlink()
+            if run_output_dir and isinstance(run_output_dir, Path) and run_output_dir.exists():
+                shutil.rmtree(run_output_dir)
+            logger.info("Cleaned up local temporary files for job %s", job_id)
+        except Exception as cleanup_ex:
+            logger.warning("Failed to clean up local files for job %s: %s", job_id, cleanup_ex)
 
 
 @app.post("/webhook")
