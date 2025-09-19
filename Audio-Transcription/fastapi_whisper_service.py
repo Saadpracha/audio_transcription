@@ -54,11 +54,15 @@ S3_BUCKET = os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
 HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
+
+# LeadConnector / HighLevel CRM config
+LEADCONNECTOR_BASE_URL = os.getenv("LEADCONNECTOR_BASE_URL", "https://services.leadconnectorhq.com")
+LEADCONNECTOR_ACCESS_TOKEN = os.getenv("LEADCONNECTOR_ACCESS_TOKEN")
 
 
 # Whisper config defaults
@@ -149,6 +153,7 @@ app = FastAPI(title="WhisperX + Diarization Transcription Service")
 class WebhookPayload(BaseModel):
     audio: str
     call_id: Optional[str] = None
+    contact_id: Optional[str] = None
     language: Optional[str] = "en"
     no_diarization: Optional[bool] = False
     # allow additional fields; Pydantic will ignore unknowns unless configured otherwise
@@ -295,14 +300,17 @@ def process_job(job_id: str, payload: dict):
         audio_url = payload.get("audio")
         if not audio_url:
             raise ValueError("payload must include 'audio' url")
-        call_id = payload.get("call_id") or str(uuid.uuid4())
+        # Prefer contact_id over call_id; maintain call_id for backward compatibility
+        contact_id = payload.get("contact_id")
+        call_id = payload.get("call_id")
+        entity_id = contact_id or call_id or str(uuid.uuid4())
 
         jobs[job_id]["status"] = "downloading"
         # build a readable persisted audio name and a temp download target
         # Add timestamp to ensure unique file names
         timestamp = int(time.time())
-        readable_name = derive_readable_audio_name(audio_url, f"{call_id}_{timestamp}_{uuid.uuid4().hex[:8]}.wav")
-        temp_download_name = f"{call_id}_{timestamp}_{uuid.uuid4().hex[:8]}"
+        readable_name = derive_readable_audio_name(audio_url, f"{entity_id}_{timestamp}_{uuid.uuid4().hex[:8]}.wav")
+        temp_download_name = f"{entity_id}_{timestamp}_{uuid.uuid4().hex[:8]}"
         local_path = AUDIO_TMP_DIR / temp_download_name
         # support basic auth via audio_auth or headers
         audio_auth = None
@@ -319,7 +327,7 @@ def process_job(job_id: str, payload: dict):
         run_output_dir = OUTPUT_DIR / run_dir_name
         run_output_dir.mkdir(parents=True, exist_ok=True)
 
-        transcript_filename = f"{call_id}_{timestamp}_diarized.json"
+        transcript_filename = f"{entity_id}_{timestamp}_diarized.json"
         transcript_path = run_output_dir / transcript_filename
         script_path = (Path(__file__).parent / "audio_transcribe_diarization.py").resolve()
         cmd = [sys.executable, str(script_path), str(local_path), "-o", str(transcript_path), "-l", payload.get("language", "en")]
@@ -332,12 +340,12 @@ def process_job(job_id: str, payload: dict):
         try:
             if ai_summary is not None and hasattr(ai_summary, "process_transcript"):
                 jobs[job_id]["status"] = "summarizing"
-                summary_filename = f"{call_id}_{timestamp}_summary.json"
+                summary_filename = f"{entity_id}_{timestamp}_summary.json"
                 summary_path = run_output_dir / summary_filename
                 ai_summary.process_transcript(str(transcript_path), str(summary_path), OPENAI_API_KEY)
                 
                 # Check if call-to-action file was created
-                call_to_action_filename = f"{call_id}_{timestamp}_call_to_action.json"
+                call_to_action_filename = f"{entity_id}_{timestamp}_call_to_action.json"
                 call_to_action_path = run_output_dir / call_to_action_filename
                 if not call_to_action_path.exists():
                     call_to_action_path = None
@@ -348,7 +356,7 @@ def process_job(job_id: str, payload: dict):
 
         # Upload files to S3
         jobs[job_id]["status"] = "uploading_to_s3"
-        s3_base_key = f"audio/{call_id}/"
+        s3_base_key = f"audio/{entity_id}/"
         
         # Upload audio file
         audio_s3_key = f"{s3_base_key}{readable_name}"
@@ -386,9 +394,59 @@ def process_job(job_id: str, payload: dict):
         except Exception as cleanup_ex:
             logger.warning("Failed to clean up local files: %s", cleanup_ex)
 
+        # Attempt to send transcription note to CRM using contact_id (if provided)
+        try:
+            if contact_id and LEADCONNECTOR_ACCESS_TOKEN:
+                jobs[job_id]["status"] = "posting_crm_note"
+                try:
+                    with open(transcript_path, "r", encoding="utf-8") as tf:
+                        transcript_json = json.load(tf)
+                except Exception:
+                    transcript_json = {}
+
+                # Build plain-text transcript body from segments
+                lines = []
+                for seg in transcript_json.get("segments", []):
+                    start = seg.get("start")
+                    speaker = seg.get("speaker", "Unknown")
+                    text = (seg.get("text") or "").strip()
+                    if isinstance(start, (int, float)):
+                        lines.append(f"[{start:.2f}] {speaker}: {text}")
+                    else:
+                        lines.append(f"{speaker}: {text}")
+                transcript_text = "\n".join(lines) if lines else json.dumps(transcript_json)[:15000]
+                # Cap length to avoid oversized payloads
+                if len(transcript_text) > 15000:
+                    transcript_text = transcript_text[:14990] + "..."
+
+                url = f"{LEADCONNECTOR_BASE_URL}/contacts/{contact_id}/notes"
+                headers = {
+                    "Authorization": f"Bearer {LEADCONNECTOR_ACCESS_TOKEN}",
+                    "Version": "2021-07-28",
+                    "Content-Type": "application/json",
+                }
+                payload_body = {"body": transcript_text or "(empty transcript)"}
+                try:
+                    resp = requests.post(url, headers=headers, json=payload_body, timeout=30)
+                    jobs[job_id]["crm_note_status_code"] = resp.status_code
+                    if not resp.ok:
+                        logger.warning("CRM note post failed: %s %s", resp.status_code, resp.text)
+                    else:
+                        logger.info("Posted transcript note to CRM for contact_id=%s", contact_id)
+                except Exception as crm_ex:
+                    logger.warning("Failed to POST CRM note: %s", crm_ex)
+            elif contact_id and not LEADCONNECTOR_ACCESS_TOKEN:
+                logger.warning("LEADCONNECTOR_ACCESS_TOKEN not set; skipping CRM note post")
+            else:
+                logger.info("No contact_id provided; skipping CRM note post")
+        except Exception as post_ex:
+            logger.warning("Unexpected error while posting CRM note: %s", post_ex)
+
         jobs[job_id]["status"] = "done"
         jobs[job_id]["finished_at"] = time.time()
         jobs[job_id]["s3_base_key"] = s3_base_key
+        jobs[job_id]["contact_id"] = contact_id
+        jobs[job_id]["call_id"] = call_id
 
         logger.info("Job %s finished successfully (simple mode)", job_id)
 
@@ -405,7 +463,8 @@ def webhook_listener(payload: dict):
     Example payload:
     {
       "audio": "https://api.twilio.com/.../Recordings/RExxx",
-      "call_id": "12345"
+      "contact_id": "abc123",
+      "call_id": "12345"  # optional/backward compatibility
     }
     
     Returns:
@@ -419,12 +478,15 @@ def webhook_listener(payload: dict):
     """
     logger.info("Received webhook payload: keys=%s", list(payload.keys()))
     job_id = str(uuid.uuid4())
-    call_id = payload.get("call_id") or str(uuid.uuid4())
+    contact_id = payload.get("contact_id")
+    call_id = payload.get("call_id")
+    entity_id = contact_id or call_id or str(uuid.uuid4())
     
     # Initialize job status
     jobs[job_id] = {
         "status": "queued", 
         "created_at": time.time(), 
+        "contact_id": contact_id,
         "call_id": call_id,
         "queue_position": 0
     }
@@ -438,6 +500,7 @@ def webhook_listener(payload: dict):
     return {
         "job_id": job_id, 
         "status_url": f"/jobs/{job_id}",
+        "contact_id": contact_id,
         "call_id": call_id,
         "status": "queued",
         "queue_position": current_position
@@ -488,6 +551,7 @@ def get_job(job_id: str):
     if job.get("status") == "done":
         response = {
             "job_id": job_id,
+            "contact_id": job.get("contact_id"),
             "call_id": job.get("call_id"),
             "status": job.get("status"),
             "created_at": job.get("created_at"),
@@ -564,4 +628,4 @@ def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("fastapi_whisper_service:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), log_level="info")
+    uvicorn.run("fastapi_whisper_service:app", host="0.0.0.0", port=int(os.getenv("PORT", 8088)), log_level="info")
