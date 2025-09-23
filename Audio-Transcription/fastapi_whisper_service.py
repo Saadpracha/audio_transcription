@@ -262,6 +262,149 @@ def upload_to_s3(local_path: Path, s3_key: str) -> str:
     return url
 
 
+def send_crm_note(contact_id: str, note_body: str, note_type: str = "general") -> bool:
+    """Send a single note to CRM for a contact."""
+    url = f"{LEADCONNECTOR_BASE_URL}/contacts/{contact_id}/notes"
+    headers = {
+        "Authorization": f"Bearer {LEADCONNECTOR_ACCESS_TOKEN}",
+        "Version": "2021-07-28",
+        "Content-Type": "application/json",
+    }
+    payload_body = {"body": note_body}
+    
+    try:
+        resp = requests.post(url, headers=headers, json=payload_body, timeout=30)
+        if resp.ok:
+            logger.info("Posted %s note to CRM for contact_id=%s", note_type, contact_id)
+            return True
+        else:
+            logger.warning("CRM %s note post failed: %s %s", note_type, resp.status_code, resp.text)
+            return False
+    except Exception as crm_ex:
+        logger.warning("Failed to POST CRM %s note: %s", note_type, crm_ex)
+        return False
+
+
+def send_file_links_note(contact_id: str, job_data: dict) -> bool:
+    """Send first note with file links."""
+    s3_links = []
+    if job_data.get("audio_s3_url"):
+        s3_links.append(f"🎵 Audio File: {job_data['audio_s3_url']}")
+    if job_data.get("transcript_s3_url"):
+        s3_links.append(f"📝 Transcript: {job_data['transcript_s3_url']}")
+    if job_data.get("summary_s3_url"):
+        s3_links.append(f"📋 Summary: {job_data['summary_s3_url']}")
+    if job_data.get("call_to_action_s3_url"):
+        s3_links.append(f"✅ Call to Action: {job_data['call_to_action_s3_url']}")
+    
+    if not s3_links:
+        logger.warning("No S3 files available to send in file links note")
+        return False
+    
+    note_body = "📁 **Call Files & Resources**\n\n" + "\n".join(s3_links)
+    return send_crm_note(contact_id, note_body, "file_links")
+
+
+def send_summary_note(contact_id: str, job_data: dict) -> bool:
+    """Send second note with summary."""
+    summary_s3_url = job_data.get("summary_s3_url")
+    if not summary_s3_url:
+        logger.warning("No summary file available to send")
+        return False
+    
+    try:
+        # Download and read summary from S3
+        summary_resp = requests.get(summary_s3_url, timeout=30)
+        if not summary_resp.ok:
+            logger.warning("Failed to download summary from S3: %s", summary_resp.status_code)
+            return False
+        
+        summary_data = summary_resp.json()
+        summary_text = summary_data.get("summary", "No summary available")
+        
+        note_body = f"📋 **Call Summary**\n\n{summary_text}"
+        return send_crm_note(contact_id, note_body, "summary")
+        
+    except Exception as e:
+        logger.warning("Failed to process summary for CRM note: %s", e)
+        return False
+
+
+def send_call_to_action_note(contact_id: str, job_data: dict) -> bool:
+    """Send third note with call to action items."""
+    call_to_action_s3_url = job_data.get("call_to_action_s3_url")
+    if not call_to_action_s3_url:
+        logger.warning("No call to action file available to send")
+        return False
+    
+    try:
+        # Download and read call to action from S3
+        cta_resp = requests.get(call_to_action_s3_url, timeout=30)
+        if not cta_resp.ok:
+            logger.warning("Failed to download call to action from S3: %s", cta_resp.status_code)
+            return False
+        
+        cta_data = cta_resp.json()
+        call_to_action_items = cta_data.get("call_to_action", [])
+        
+        if not call_to_action_items:
+            logger.warning("No call to action items found in file")
+            return False
+        
+        # Format call to action items
+        cta_lines = ["✅ **Call to Action Items**\n"]
+        for i, item in enumerate(call_to_action_items, 1):
+            action = item.get("item", "No action specified")
+            owner = item.get("owner", "Unassigned")
+            due = item.get("due", "No due date")
+            
+            cta_lines.append(f"{i}. **{action}**")
+            cta_lines.append(f"   👤 Owner: {owner}")
+            if due and due != "":
+                cta_lines.append(f"   📅 Due: {due}")
+            cta_lines.append("")  # Empty line for spacing
+        
+        note_body = "\n".join(cta_lines)
+        return send_crm_note(contact_id, note_body, "call_to_action")
+        
+    except Exception as e:
+        logger.warning("Failed to process call to action for CRM note: %s", e)
+        return False
+
+
+def send_crm_notes(contact_id: str, job_data: dict):
+    """Send three separate notes to CRM: file links, summary, and call to action."""
+    logger.info("Sending three separate notes to CRM for contact_id=%s", contact_id)
+    
+    # Track success of each note
+    notes_sent = {
+        "file_links": False,
+        "summary": False,
+        "call_to_action": False
+    }
+    
+    # Send first note: File links
+    notes_sent["file_links"] = send_file_links_note(contact_id, job_data)
+    
+    # Send second note: Summary
+    notes_sent["summary"] = send_summary_note(contact_id, job_data)
+    
+    # Send third note: Call to action
+    notes_sent["call_to_action"] = send_call_to_action_note(contact_id, job_data)
+    
+    # Log results
+    successful_notes = [note_type for note_type, success in notes_sent.items() if success]
+    failed_notes = [note_type for note_type, success in notes_sent.items() if not success]
+    
+    if successful_notes:
+        logger.info("Successfully sent notes to CRM: %s", ", ".join(successful_notes))
+    if failed_notes:
+        logger.warning("Failed to send notes to CRM: %s", ", ".join(failed_notes))
+    
+    # Store results in job data
+    job_data["crm_notes_sent"] = notes_sent
+
+
 def summarize_transcript_with_openai(transcription: dict) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -353,9 +496,13 @@ def process_job(job_id: str, payload: dict):
         try:
             if ai_summary is not None and hasattr(ai_summary, "process_transcript"):
                 jobs[job_id]["status"] = "summarizing"
-                summary_filename = f"{entity_id}_{timestamp}_summary.json"
-                summary_path = run_output_dir / summary_filename
-                ai_summary.process_transcript(str(transcript_path), str(summary_path), OPENAI_API_KEY)
+                # Use a proper base output file so ai_summary writes:
+                # <base>.json, <base>_summary.json, <base>_call_to_action.json
+                base_output_filename = f"{entity_id}_{timestamp}.json"
+                base_output_path = run_output_dir / base_output_filename
+                ai_summary.process_transcript(str(transcript_path), str(base_output_path), OPENAI_API_KEY)
+                # Expected generated files
+                summary_path = run_output_dir / f"{entity_id}_{timestamp}_summary.json"
                 
                 # Check if call-to-action file was created
                 call_to_action_filename = f"{entity_id}_{timestamp}_call_to_action.json"
@@ -397,79 +544,20 @@ def process_job(job_id: str, payload: dict):
             jobs[job_id]["call_to_action_s3_url"] = call_to_action_s3_url
             jobs[job_id]["call_to_action_s3_key"] = call_to_action_s3_key
 
-        # Attempt to send transcription note to CRM using contact_id (if provided)
+        # Send three separate notes to CRM using contact_id (if provided)
         try:
             if contact_id and LEADCONNECTOR_ACCESS_TOKEN:
-                jobs[job_id]["status"] = "posting_crm_note"
-                try:
-                    with open(transcript_path, "r", encoding="utf-8") as tf:
-                        transcript_json = json.load(tf)
-                except Exception:
-                    transcript_json = {}
-
-                # Build plain-text transcript body from segments
-                lines = []
-                for seg in transcript_json.get("segments", []):
-                    start = seg.get("start")
-                    speaker = seg.get("speaker", "Unknown")
-                    text = (seg.get("text") or "").strip()
-                    if isinstance(start, (int, float)):
-                        lines.append(f"[{start:.2f}] {speaker}: {text}")
-                    else:
-                        lines.append(f"{speaker}: {text}")
-                transcript_text = "\n".join(lines) if lines else json.dumps(transcript_json)[:15000]
+                jobs[job_id]["status"] = "posting_crm_notes"
                 
-                # Add S3 file links to the note body
-                s3_links = []
-                if jobs[job_id].get("audio_s3_url"):
-                    s3_links.append(f"Audio: {jobs[job_id]['audio_s3_url']}")
-                if jobs[job_id].get("transcript_s3_url"):
-                    s3_links.append(f"Transcript: {jobs[job_id]['transcript_s3_url']}")
-                if jobs[job_id].get("summary_s3_url"):
-                    s3_links.append(f"Summary: {jobs[job_id]['summary_s3_url']}")
-                if jobs[job_id].get("call_to_action_s3_url"):
-                    s3_links.append(f"Call to Action: {jobs[job_id]['call_to_action_s3_url']}")
+                # Send three separate notes
+                send_crm_notes(contact_id, jobs[job_id])
                 
-                # Combine transcript with S3 links
-                if s3_links:
-                    s3_section = "\n\n--- S3 Files ---\n" + "\n".join(s3_links)
-                    full_note_body = transcript_text + s3_section
-                else:
-                    full_note_body = transcript_text
-                
-                # Cap length to avoid oversized payloads (leave room for S3 links)
-                if len(full_note_body) > 15000:
-                    # Truncate transcript but keep S3 links
-                    if s3_links:
-                        s3_section = "\n\n--- S3 Files ---\n" + "\n".join(s3_links)
-                        max_transcript_length = 15000 - len(s3_section) - 100  # buffer
-                        truncated_transcript = transcript_text[:max_transcript_length] + "..."
-                        full_note_body = truncated_transcript + s3_section
-                    else:
-                        full_note_body = transcript_text[:14990] + "..."
-
-                url = f"{LEADCONNECTOR_BASE_URL}/contacts/{contact_id}/notes"
-                headers = {
-                    "Authorization": f"Bearer {LEADCONNECTOR_ACCESS_TOKEN}",
-                    "Version": "2021-07-28",
-                    "Content-Type": "application/json",
-                }
-                payload_body = {"body": full_note_body or "(empty transcript)"}
-                try:
-                    resp = requests.post(url, headers=headers, json=payload_body, timeout=30)
-                    jobs[job_id]["crm_note_status_code"] = resp.status_code
-                    if not resp.ok:
-                        logger.warning("CRM note post failed: %s %s", resp.status_code, resp.text)
-                    else:
-                        logger.info("Posted transcript note to CRM for contact_id=%s", contact_id)
-                except Exception as crm_ex:
-                    logger.warning("Failed to POST CRM note: %s", crm_ex)
             elif contact_id and not LEADCONNECTOR_ACCESS_TOKEN:
                 logger.warning("LEADCONNECTOR_ACCESS_TOKEN not set; skipping CRM note post")
             else:
                 logger.info("No contact_id provided; skipping CRM note post")
         except Exception as post_ex:
-            logger.warning("Unexpected error while posting CRM note: %s", post_ex)
+            logger.warning("Unexpected error while posting CRM notes: %s", post_ex)
 
         jobs[job_id]["status"] = "done"
         jobs[job_id]["finished_at"] = time.time()

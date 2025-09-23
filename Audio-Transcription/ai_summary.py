@@ -34,18 +34,39 @@ def create_prompt(transcript):
         full_transcript = json.dumps(transcript, ensure_ascii=False)
 
     prompt = f"""
-You are a meeting-notes assistant.
-Return ONLY JSON matching the schema (summary, call_to_action_items).
+You are an expert meeting and call analysis assistant.
+Your job is to read the transcript of a sales or support call and return ONLY valid JSON.
+
+The JSON must follow this schema exactly:
+{{
+  "summary": "string – a clear, concise summary of the call (cover goals, decisions, commitments, numbers, and outcomes).",
+  "call_to_action_items": [
+    {{
+      "item": "string – the specific task or next step",
+      "owner": "string – person responsible (use speaker names if clear, else leave empty)",
+      "due": "string – due date if mentioned, else empty"
+    }}
+  ],
+  "call_quality_feedback": {{
+    "strengths": ["list of things done well – rapport, clarity, active listening, etc."],
+    "improvements": ["list of ways caller/agent can improve – tone, pacing, missing info, objection handling, etc."]
+  }}
+}}
+
 Guidelines:
-- Adapt detail to transcript length and complexity (brief for short calls; more detailed for long/complex ones).
-- Capture outcomes, decisions, commitments, numbers, dates, and owners.
-- Infer owners from speaker labels; leave 'owner' empty if unclear. Use "" for missing 'due'.
+- Be **brief but insightful**: a short call = short summary; a long/complex call = more detail.
+- Summaries should highlight outcomes, decisions, and commitments – not just a play-by-play.
+- Call-to-actions must be **specific and actionable**. Avoid vague items like "follow up" unless no detail is provided.
+- Owners: infer from speaker labels where possible. Example: if "Agent" says "I will send the proposal", set owner = "Agent".
+- If dates are mentioned, capture them (e.g. "by Friday"); if not, leave due = "".
+- Feedback should be constructive: balance what went well with what could improve.
 
 TRANSCRIPT:
-<<< 
+<<<
 {full_transcript}
 >>>
 """
+
     return prompt
 
 # Function to call OpenAI's API and get the summary
@@ -95,9 +116,28 @@ def save_outputs(parsed_json: dict, base_output_path: str):
             cta_val = parsed_json[k]
             break
 
-    # Save summary (as JSON wrapper)
+    # Extract call quality feedback (support a few variants)
+    call_quality_val = None
+    for k in ("call_quality_feedback", "call_quality", "quality_feedback", "callQualityFeedback"):
+        if k in parsed_json:
+            call_quality_val = parsed_json[k]
+            break
+
+    # Normalize call quality feedback
+    if not isinstance(call_quality_val, dict):
+        call_quality_val = {"strengths": [], "improvements": []}
+    else:
+        if "strengths" not in call_quality_val or not isinstance(call_quality_val.get("strengths"), list):
+            call_quality_val["strengths"] = list(call_quality_val.get("strengths", []))
+        if "improvements" not in call_quality_val or not isinstance(call_quality_val.get("improvements"), list):
+            call_quality_val["improvements"] = list(call_quality_val.get("improvements", []))
+
+    # Save summary JSON with embedded call quality feedback
     with open(summary_path, 'w', encoding='utf-8') as f:
-        json.dump({"summary": summary_val}, f, indent=4, ensure_ascii=False)
+        json.dump({
+            "summary": summary_val,
+            "call_quality_feedback": call_quality_val
+        }, f, indent=4, ensure_ascii=False)
     print(f"Summary saved to {summary_path}")
 
     # Save CTA (normalize to empty list if None)
