@@ -154,6 +154,9 @@ class WebhookPayload(BaseModel):
     audio: str
     call_id: Optional[str] = None
     contact_id: Optional[str] = None
+    caller_first_name: Optional[str] = None
+    caller_last_name: Optional[str] = None
+    show_prompt: Optional[bool] = False
     language: Optional[str] = "en"
     no_diarization: Optional[bool] = False
     # allow additional fields; Pydantic will ignore unknowns unless configured otherwise
@@ -296,6 +299,8 @@ def send_file_links_note(contact_id: str, job_data: dict) -> bool:
         s3_links.append(f"📋 Summary: {job_data['summary_s3_url']}")
     if job_data.get("call_to_action_s3_url"):
         s3_links.append(f"✅ Call to Action: {job_data['call_to_action_s3_url']}")
+    if job_data.get("prompt_s3_url"):
+        s3_links.append(f"🤖 AI Prompt: {job_data['prompt_s3_url']}")
     
     if not s3_links:
         logger.warning("No S3 files available to send in file links note")
@@ -369,6 +374,70 @@ def send_call_to_action_note(contact_id: str, job_data: dict) -> bool:
         
     except Exception as e:
         logger.warning("Failed to process call to action for CRM note: %s", e)
+        return False
+
+
+def create_prompt_file(prompt_path: Path, caller_first_name: str = "", caller_last_name: str = ""):
+    """Create a prompt.json file with the current prompt template and caller information."""
+    try:
+        # Get the default prompt from ai_summary
+        if ai_summary and hasattr(ai_summary, "get_default_prompt"):
+            prompt_template = ai_summary.get_default_prompt()
+        else:
+            # Fallback prompt if ai_summary is not available
+            prompt_template = """You are an expert meeting and call analysis assistant.
+Your job is to read the transcript of a sales or support call and return ONLY valid JSON.
+
+The JSON must follow this schema exactly:
+{{
+  "summary": "string – a clear, concise summary of the call (cover goals, decisions, commitments, numbers, and outcomes).",
+  "call_to_action_items": [
+    {{
+      "item": "string – the specific task or next step",
+      "owner": "string – person responsible (use speaker names if clear, else leave empty)",
+      "due": "string – due date if mentioned, else empty"
+    }}
+  ],
+  "call_quality_feedback": {{
+    "strengths": ["list of things done well – rapport, clarity, active listening, etc."],
+    "improvements": ["list of ways caller/agent can improve – tone, pacing, missing info, objection handling, etc."]
+  }}
+}}
+
+Guidelines:
+- Be **brief but insightful**: a short call = short summary; a long/complex call = more detail.
+- Summaries should highlight outcomes, decisions, and commitments – not just a play-by-play.
+- Call-to-actions must be **specific and actionable**. Avoid vague items like "follow up" unless no detail is provided.
+- Owners: infer from speaker labels where possible. Example: if "Agent" says "I will send the proposal", set owner = "Agent".
+- If dates are mentioned, capture them (e.g. "by Friday"); if not, leave due = "".
+- Feedback should be constructive: balance what went well with what could improve.
+
+TRANSCRIPT:
+<<<
+{{full_transcript}}
+>>>"""
+
+        # Create prompt data with caller information
+        prompt_data = {
+            "prompt": prompt_template,
+            "caller_information": {
+                "first_name": caller_first_name,
+                "last_name": caller_last_name,
+                "full_name": f"{caller_first_name} {caller_last_name}".strip()
+            },
+            "created_at": time.time(),
+            "version": "1.0"
+        }
+        
+        # Write to file
+        with open(prompt_path, 'w', encoding='utf-8') as f:
+            json.dump(prompt_data, f, indent=4, ensure_ascii=False)
+        
+        logger.info("Created prompt file: %s", prompt_path)
+        return True
+        
+    except Exception as e:
+        logger.exception("Failed to create prompt file: %s", e)
         return False
 
 
@@ -493,6 +562,7 @@ def process_job(job_id: str, payload: dict):
         # Summarize using ai_summary.process_transcript if available
         summary_path = None
         call_to_action_path = None
+        prompt_path = None
         try:
             if ai_summary is not None and hasattr(ai_summary, "process_transcript"):
                 jobs[job_id]["status"] = "summarizing"
@@ -500,7 +570,21 @@ def process_job(job_id: str, payload: dict):
                 # <base>.json, <base>_summary.json, <base>_call_to_action.json
                 base_output_filename = f"{entity_id}_{timestamp}.json"
                 base_output_path = run_output_dir / base_output_filename
-                ai_summary.process_transcript(str(transcript_path), str(base_output_path), OPENAI_API_KEY)
+                
+                # Get caller information from payload
+                caller_first_name = payload.get("caller_first_name", "")
+                caller_last_name = payload.get("caller_last_name", "")
+                
+                # Process transcript with caller information
+                ai_summary.process_transcript(
+                    str(transcript_path), 
+                    str(base_output_path), 
+                    OPENAI_API_KEY,
+                    "prompt.json",  # prompt file path
+                    caller_first_name,
+                    caller_last_name
+                )
+                
                 # Expected generated files
                 summary_path = run_output_dir / f"{entity_id}_{timestamp}_summary.json"
                 
@@ -509,6 +593,13 @@ def process_job(job_id: str, payload: dict):
                 call_to_action_path = run_output_dir / call_to_action_filename
                 if not call_to_action_path.exists():
                     call_to_action_path = None
+                    
+                # Create prompt.json file if show_prompt is true
+                if payload.get("show_prompt", False):
+                    prompt_filename = f"{entity_id}_{timestamp}_prompt.json"
+                    prompt_path = run_output_dir / prompt_filename
+                    create_prompt_file(prompt_path, caller_first_name, caller_last_name)
+                    
             else:
                 logger.warning("ai_summary.process_transcript not available; skipping summarization")
         except Exception as summarize_ex:
@@ -543,6 +634,13 @@ def process_job(job_id: str, payload: dict):
             call_to_action_s3_url = upload_to_s3(call_to_action_path, call_to_action_s3_key)
             jobs[job_id]["call_to_action_s3_url"] = call_to_action_s3_url
             jobs[job_id]["call_to_action_s3_key"] = call_to_action_s3_key
+
+        # Upload prompt file if it exists (when show_prompt=true)
+        if prompt_path and prompt_path.exists():
+            prompt_s3_key = f"{s3_base_key}{prompt_path.name}"
+            prompt_s3_url = upload_to_s3(prompt_path, prompt_s3_key)
+            jobs[job_id]["prompt_s3_url"] = prompt_s3_url
+            jobs[job_id]["prompt_s3_key"] = prompt_s3_key
 
         # Send three separate notes to CRM using contact_id (if provided)
         try:
@@ -591,6 +689,10 @@ def webhook_listener(payload: dict):
     {
       "audio": "https://api.twilio.com/.../Recordings/RExxx",
       "contact_id": "abc123",
+      "caller_first_name": "John",
+      "caller_last_name": "Doe",
+      "show_prompt": true,
+      "language": "en",
       "call_id": "12345"  # optional/backward compatibility
     }
     
@@ -598,6 +700,7 @@ def webhook_listener(payload: dict):
     {
       "job_id": "uuid",
       "status_url": "/jobs/{job_id}",
+      "contact_id": "abc123",
       "call_id": "12345",
       "status": "queued",
       "queue_position": 1
@@ -717,6 +820,14 @@ def get_job(job_id: str):
                 "url": job.get("call_to_action_s3_url"),
                 "key": job.get("call_to_action_s3_key"),
                 "filename": job.get("call_to_action_s3_key", "").split("/")[-1] if job.get("call_to_action_s3_key") else None
+            }
+        
+        # Add prompt file info (if exists)
+        if job.get("prompt_s3_url"):
+            response["files"]["prompt"] = {
+                "url": job.get("prompt_s3_url"),
+                "key": job.get("prompt_s3_key"),
+                "filename": job.get("prompt_s3_key", "").split("/")[-1] if job.get("prompt_s3_key") else None
             }
         
         return response

@@ -21,20 +21,25 @@ def load_transcript(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         return json.load(file)
 
-# Function to create the API prompt
-def create_prompt(transcript):
-    # Support multiple transcript shapes
-    if isinstance(transcript, dict) and "segments" in transcript:
-        # Expecting list of {'text': ...}
-        full_transcript = "\n".join([seg.get('text', '') for seg in transcript['segments']])
-    elif isinstance(transcript, dict) and "text" in transcript:
-        full_transcript = transcript["text"]
-    else:
-        # Fallback: stringify the transcript object
-        full_transcript = json.dumps(transcript, ensure_ascii=False)
+# Function to load prompt from JSON file
+def load_prompt_from_json(prompt_file_path: str = "prompt.json") -> str:
+    """Load prompt template from JSON file. If file doesn't exist, use default prompt."""
+    try:
+        if os.path.exists(prompt_file_path):
+            with open(prompt_file_path, 'r', encoding='utf-8') as file:
+                prompt_data = json.load(file)
+                return prompt_data.get("prompt", get_default_prompt())
+        else:
+            print(f"Prompt file {prompt_file_path} not found, using default prompt")
+            return get_default_prompt()
+    except Exception as e:
+        print(f"Error loading prompt from {prompt_file_path}: {e}, using default prompt")
+        return get_default_prompt()
 
-    prompt = f"""
-You are an expert meeting and call analysis assistant.
+# Function to get default prompt
+def get_default_prompt() -> str:
+    """Return the default prompt template."""
+    return """You are an expert meeting and call analysis assistant.
 Your job is to read the transcript of a sales or support call and return ONLY valid JSON.
 
 The JSON must follow this schema exactly:
@@ -64,9 +69,32 @@ Guidelines:
 TRANSCRIPT:
 <<<
 {full_transcript}
->>>
-"""
+>>>"""
 
+# Function to create the API prompt
+def create_prompt(transcript, prompt_file_path: str = "prompt.json", caller_first_name: str = "", caller_last_name: str = ""):
+    # Support multiple transcript shapes
+    if isinstance(transcript, dict) and "segments" in transcript:
+        # Expecting list of {'text': ...}
+        full_transcript = "\n".join([seg.get('text', '') for seg in transcript['segments']])
+    elif isinstance(transcript, dict) and "text" in transcript:
+        full_transcript = transcript["text"]
+    else:
+        # Fallback: stringify the transcript object
+        full_transcript = json.dumps(transcript, ensure_ascii=False)
+
+    # Load prompt template from JSON file
+    prompt_template = load_prompt_from_json(prompt_file_path)
+    
+    # Add caller information to the transcript if provided
+    caller_info = ""
+    if caller_first_name or caller_last_name:
+        caller_name = f"{caller_first_name} {caller_last_name}".strip()
+        caller_info = f"\n\nCALLER INFORMATION:\nCaller Name: {caller_name}\n\n"
+        full_transcript = caller_info + full_transcript
+
+    # Format the prompt with the transcript
+    prompt = prompt_template.format(full_transcript=full_transcript)
     return prompt
 
 # Function to call OpenAI's API and get the summary
@@ -154,12 +182,12 @@ def save_raw_response(raw_text: str, base_output_path: str):
     print(f"Raw response saved to {raw_path}")
 
 # Main function to process the transcript and generate the summary
-def process_transcript(input_path, output_path, api_key):
+def process_transcript(input_path, output_path, api_key, prompt_file_path="prompt.json", caller_first_name="", caller_last_name=""):
     transcript = load_transcript(input_path)
     if transcript is None:
         return
 
-    prompt = create_prompt(transcript)
+    prompt = create_prompt(transcript, prompt_file_path, caller_first_name, caller_last_name)
     response_text = get_summary_from_openai(prompt, api_key)
     if not response_text:
         print("No response from OpenAI.")
