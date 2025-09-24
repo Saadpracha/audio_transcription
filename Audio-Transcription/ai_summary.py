@@ -93,8 +93,9 @@ def create_prompt(transcript, prompt_file_path: str = "prompt.json", caller_firs
         caller_info = f"\n\nCALLER INFORMATION:\nCaller Name: {caller_name}\n\n"
         full_transcript = caller_info + full_transcript
 
-    # Format the prompt with the transcript
-    prompt = prompt_template.format(full_transcript=full_transcript)
+    # Safely inject transcript without interpreting other braces in the template
+    # Only replace the specific placeholder token
+    prompt = prompt_template.replace("{full_transcript}", full_transcript)
     return prompt
 
 # Function to call OpenAI's API and get the summary
