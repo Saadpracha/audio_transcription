@@ -158,9 +158,6 @@ class WebhookPayload(BaseModel):
     caller_name: Optional[str] = None
     contact_first_name: Optional[str] = None
     contact_last_name: Optional[str] = None
-    # Backward-compatible fields (will be derived from caller_name if provided)
-    caller_first_name: Optional[str] = None
-    caller_last_name: Optional[str] = None
     show_prompt: Optional[bool] = False
     language: Optional[str] = "en"
     no_diarization: Optional[bool] = False
@@ -382,7 +379,7 @@ def send_call_to_action_note(contact_id: str, job_data: dict, access_token: str)
         return False
 
 
-def create_prompt_file(prompt_path: Path, caller_first_name: str = "", caller_last_name: str = "", contact_first_name: str = "", contact_last_name: str = ""):
+def create_prompt_file(prompt_path: Path, caller_name: str = "", contact_first_name: str = "", contact_last_name: str = ""):
     """Create a prompt.json file with the current prompt template and caller information."""
     try:
         # Get the default prompt from ai_summary
@@ -426,9 +423,7 @@ TRANSCRIPT:
         prompt_data = {
             "prompt": prompt_template,
             "caller_information": {
-                "first_name": caller_first_name,
-                "last_name": caller_last_name,
-                "full_name": f"{caller_first_name} {caller_last_name}".strip()
+                "full_name": caller_name.strip()
             },
             "contact_information": {
                 "first_name": contact_first_name,
@@ -582,19 +577,19 @@ def process_job(job_id: str, payload: dict):
                 base_output_path = run_output_dir / base_output_filename
                 
                 # Get caller and contact information from payload
-                caller_first_name = payload.get("caller_first_name") or ""
-                caller_last_name = payload.get("caller_last_name") or ""
                 caller_name = payload.get("caller_name") or ""
-                if (not caller_first_name and not caller_last_name) and caller_name:
-                    try:
-                        parts = [p for p in caller_name.strip().split(" ") if p]
-                        if len(parts) == 1:
-                            caller_first_name = parts[0]
-                        elif len(parts) >= 2:
-                            caller_first_name = parts[0]
-                            caller_last_name = " ".join(parts[1:])
-                    except Exception:
-                        pass
+                # For ai_summary.process_transcript we still split into first/last locally
+                split_first = ""
+                split_last = ""
+                try:
+                    parts = [p for p in caller_name.strip().split(" ") if p]
+                    if len(parts) == 1:
+                        split_first = parts[0]
+                    elif len(parts) >= 2:
+                        split_first = parts[0]
+                        split_last = " ".join(parts[1:])
+                except Exception:
+                    pass
                 contact_first_name = payload.get("contact_first_name") or ""
                 contact_last_name = payload.get("contact_last_name") or ""
                 
@@ -604,8 +599,8 @@ def process_job(job_id: str, payload: dict):
                     str(base_output_path), 
                     OPENAI_API_KEY,
                     "prompt.json",  # prompt file path
-                    caller_first_name,
-                    caller_last_name
+                    split_first,
+                    split_last
                 )
                 
                 # Expected generated files
@@ -621,7 +616,7 @@ def process_job(job_id: str, payload: dict):
                 if payload.get("show_prompt", False):
                     prompt_filename = f"{entity_id}_{timestamp}_prompt.json"
                     prompt_path = run_output_dir / prompt_filename
-                    create_prompt_file(prompt_path, caller_first_name, caller_last_name, contact_first_name, contact_last_name)
+                    create_prompt_file(prompt_path, caller_name, contact_first_name, contact_last_name)
                     
             else:
                 logger.warning("ai_summary.process_transcript not available; skipping summarization")
@@ -634,28 +629,14 @@ def process_job(job_id: str, payload: dict):
                 with open(summary_path, "r", encoding="utf-8") as sf:
                     summary_json = json.load(sf)
                 # Prepare names again (safe if already set above; handle path where ai_summary block skipped)
-                caller_first_name = payload.get("caller_first_name") or ""
-                caller_last_name = payload.get("caller_last_name") or ""
                 caller_name = payload.get("caller_name") or ""
-                if (not caller_first_name and not caller_last_name) and caller_name:
-                    try:
-                        parts = [p for p in caller_name.strip().split(" ") if p]
-                        if len(parts) == 1:
-                            caller_first_name = parts[0]
-                        elif len(parts) >= 2:
-                            caller_first_name = parts[0]
-                            caller_last_name = " ".join(parts[1:])
-                    except Exception:
-                        pass
                 contact_first_name = payload.get("contact_first_name") or ""
                 contact_last_name = payload.get("contact_last_name") or ""
 
                 summary_json.setdefault("metadata", {})
                 summary_json["metadata"].update({
                     "caller": {
-                        "first_name": caller_first_name,
-                        "last_name": caller_last_name,
-                        "full_name": f"{caller_first_name} {caller_last_name}".strip()
+                        "full_name": caller_name.strip()
                     },
                     "contact": {
                         "first_name": contact_first_name,
