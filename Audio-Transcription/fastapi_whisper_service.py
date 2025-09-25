@@ -11,8 +11,6 @@ import sys
 import subprocess
 import shutil
 from collections import deque
-
-# Import summarizer module to call its function directly (does not execute main block)
 try:
     import ai_summary  # type: ignore
 except Exception:
@@ -62,7 +60,8 @@ HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 
 # LeadConnector / HighLevel CRM config
 LEADCONNECTOR_BASE_URL = os.getenv("LEADCONNECTOR_BASE_URL", "https://services.leadconnectorhq.com")
-LEADCONNECTOR_ACCESS_TOKEN = os.getenv("LEADCONNECTOR_ACCESS_TOKEN")
+# Access token now comes from webhook payload as `token` (Make.com). We intentionally
+# do not read a default from environment anymore.
 
 
 # Whisper config defaults
@@ -154,6 +153,12 @@ class WebhookPayload(BaseModel):
     audio: str
     call_id: Optional[str] = None
     contact_id: Optional[str] = None
+    # New fields from Make.com
+    token: Optional[str] = None
+    caller_name: Optional[str] = None
+    contact_first_name: Optional[str] = None
+    contact_last_name: Optional[str] = None
+    # Backward-compatible fields (will be derived from caller_name if provided)
     caller_first_name: Optional[str] = None
     caller_last_name: Optional[str] = None
     show_prompt: Optional[bool] = False
@@ -265,11 +270,11 @@ def upload_to_s3(local_path: Path, s3_key: str) -> str:
     return url
 
 
-def send_crm_note(contact_id: str, note_body: str, note_type: str = "general") -> bool:
+def send_crm_note(contact_id: str, note_body: str, access_token: str, note_type: str = "general") -> bool:
     """Send a single note to CRM for a contact."""
     url = f"{LEADCONNECTOR_BASE_URL}/contacts/{contact_id}/notes"
     headers = {
-        "Authorization": f"Bearer {LEADCONNECTOR_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {access_token}",
         "Version": "2021-07-28",
         "Content-Type": "application/json",
     }
@@ -288,7 +293,7 @@ def send_crm_note(contact_id: str, note_body: str, note_type: str = "general") -
         return False
 
 
-def send_file_links_note(contact_id: str, job_data: dict) -> bool:
+def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send first note with file links."""
     s3_links = []
     if job_data.get("audio_s3_url"):
@@ -307,10 +312,10 @@ def send_file_links_note(contact_id: str, job_data: dict) -> bool:
         return False
     
     note_body = "📁 **Call Files & Resources**\n\n" + "\n".join(s3_links)
-    return send_crm_note(contact_id, note_body, "file_links")
+    return send_crm_note(contact_id, note_body, access_token, "file_links")
 
 
-def send_summary_note(contact_id: str, job_data: dict) -> bool:
+def send_summary_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send second note with summary."""
     summary_s3_url = job_data.get("summary_s3_url")
     if not summary_s3_url:
@@ -328,14 +333,14 @@ def send_summary_note(contact_id: str, job_data: dict) -> bool:
         summary_text = summary_data.get("summary", "No summary available")
         
         note_body = f"📋 **Call Summary**\n\n{summary_text}"
-        return send_crm_note(contact_id, note_body, "summary")
+        return send_crm_note(contact_id, note_body, access_token, "summary")
         
     except Exception as e:
         logger.warning("Failed to process summary for CRM note: %s", e)
         return False
 
 
-def send_call_to_action_note(contact_id: str, job_data: dict) -> bool:
+def send_call_to_action_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send third note with call to action items."""
     call_to_action_s3_url = job_data.get("call_to_action_s3_url")
     if not call_to_action_s3_url:
@@ -370,14 +375,14 @@ def send_call_to_action_note(contact_id: str, job_data: dict) -> bool:
             cta_lines.append("")  # Empty line for spacing
         
         note_body = "\n".join(cta_lines)
-        return send_crm_note(contact_id, note_body, "call_to_action")
+        return send_crm_note(contact_id, note_body, access_token, "call_to_action")
         
     except Exception as e:
         logger.warning("Failed to process call to action for CRM note: %s", e)
         return False
 
 
-def create_prompt_file(prompt_path: Path, caller_first_name: str = "", caller_last_name: str = ""):
+def create_prompt_file(prompt_path: Path, caller_first_name: str = "", caller_last_name: str = "", contact_first_name: str = "", contact_last_name: str = ""):
     """Create a prompt.json file with the current prompt template and caller information."""
     try:
         # Get the default prompt from ai_summary
@@ -417,13 +422,18 @@ TRANSCRIPT:
 {{full_transcript}}
 >>>"""
 
-        # Create prompt data with caller information
+        # Create prompt data with caller and contact information
         prompt_data = {
             "prompt": prompt_template,
             "caller_information": {
                 "first_name": caller_first_name,
                 "last_name": caller_last_name,
                 "full_name": f"{caller_first_name} {caller_last_name}".strip()
+            },
+            "contact_information": {
+                "first_name": contact_first_name,
+                "last_name": contact_last_name,
+                "full_name": f"{contact_first_name} {contact_last_name}".strip()
             },
             "created_at": time.time(),
             "version": "1.0"
@@ -441,7 +451,7 @@ TRANSCRIPT:
         return False
 
 
-def send_crm_notes(contact_id: str, job_data: dict):
+def send_crm_notes(contact_id: str, job_data: dict, access_token: str):
     """Send three separate notes to CRM: file links, summary, and call to action."""
     logger.info("Sending three separate notes to CRM for contact_id=%s", contact_id)
     
@@ -453,13 +463,13 @@ def send_crm_notes(contact_id: str, job_data: dict):
     }
     
     # Send first note: File links
-    notes_sent["file_links"] = send_file_links_note(contact_id, job_data)
+    notes_sent["file_links"] = send_file_links_note(contact_id, job_data, access_token)
     
     # Send second note: Summary
-    notes_sent["summary"] = send_summary_note(contact_id, job_data)
+    notes_sent["summary"] = send_summary_note(contact_id, job_data, access_token)
     
     # Send third note: Call to action
-    notes_sent["call_to_action"] = send_call_to_action_note(contact_id, job_data)
+    notes_sent["call_to_action"] = send_call_to_action_note(contact_id, job_data, access_token)
     
     # Log results
     successful_notes = [note_type for note_type, success in notes_sent.items() if success]
@@ -571,9 +581,22 @@ def process_job(job_id: str, payload: dict):
                 base_output_filename = f"{entity_id}_{timestamp}.json"
                 base_output_path = run_output_dir / base_output_filename
                 
-                # Get caller information from payload
-                caller_first_name = payload.get("caller_first_name", "")
-                caller_last_name = payload.get("caller_last_name", "")
+                # Get caller and contact information from payload
+                caller_first_name = payload.get("caller_first_name") or ""
+                caller_last_name = payload.get("caller_last_name") or ""
+                caller_name = payload.get("caller_name") or ""
+                if (not caller_first_name and not caller_last_name) and caller_name:
+                    try:
+                        parts = [p for p in caller_name.strip().split(" ") if p]
+                        if len(parts) == 1:
+                            caller_first_name = parts[0]
+                        elif len(parts) >= 2:
+                            caller_first_name = parts[0]
+                            caller_last_name = " ".join(parts[1:])
+                    except Exception:
+                        pass
+                contact_first_name = payload.get("contact_first_name") or ""
+                contact_last_name = payload.get("contact_last_name") or ""
                 
                 # Process transcript with caller information
                 ai_summary.process_transcript(
@@ -598,12 +621,52 @@ def process_job(job_id: str, payload: dict):
                 if payload.get("show_prompt", False):
                     prompt_filename = f"{entity_id}_{timestamp}_prompt.json"
                     prompt_path = run_output_dir / prompt_filename
-                    create_prompt_file(prompt_path, caller_first_name, caller_last_name)
+                    create_prompt_file(prompt_path, caller_first_name, caller_last_name, contact_first_name, contact_last_name)
                     
             else:
                 logger.warning("ai_summary.process_transcript not available; skipping summarization")
         except Exception as summarize_ex:
             logger.exception("Summarization step failed: %s", summarize_ex)
+
+        # Inject caller/contact metadata into summary JSON (without changing summary text)
+        try:
+            if summary_path and summary_path.exists():
+                with open(summary_path, "r", encoding="utf-8") as sf:
+                    summary_json = json.load(sf)
+                # Prepare names again (safe if already set above; handle path where ai_summary block skipped)
+                caller_first_name = payload.get("caller_first_name") or ""
+                caller_last_name = payload.get("caller_last_name") or ""
+                caller_name = payload.get("caller_name") or ""
+                if (not caller_first_name and not caller_last_name) and caller_name:
+                    try:
+                        parts = [p for p in caller_name.strip().split(" ") if p]
+                        if len(parts) == 1:
+                            caller_first_name = parts[0]
+                        elif len(parts) >= 2:
+                            caller_first_name = parts[0]
+                            caller_last_name = " ".join(parts[1:])
+                    except Exception:
+                        pass
+                contact_first_name = payload.get("contact_first_name") or ""
+                contact_last_name = payload.get("contact_last_name") or ""
+
+                summary_json.setdefault("metadata", {})
+                summary_json["metadata"].update({
+                    "caller": {
+                        "first_name": caller_first_name,
+                        "last_name": caller_last_name,
+                        "full_name": f"{caller_first_name} {caller_last_name}".strip()
+                    },
+                    "contact": {
+                        "first_name": contact_first_name,
+                        "last_name": contact_last_name,
+                        "full_name": f"{contact_first_name} {contact_last_name}".strip()
+                    }
+                })
+                with open(summary_path, "w", encoding="utf-8") as sf:
+                    json.dump(summary_json, sf, indent=2, ensure_ascii=False)
+        except Exception as meta_ex:
+            logger.warning("Failed to inject metadata into summary file: %s", meta_ex)
 
         # Upload files to S3
         jobs[job_id]["status"] = "uploading_to_s3"
@@ -642,16 +705,17 @@ def process_job(job_id: str, payload: dict):
             jobs[job_id]["prompt_s3_url"] = prompt_s3_url
             jobs[job_id]["prompt_s3_key"] = prompt_s3_key
 
-        # Send three separate notes to CRM using contact_id (if provided)
+        # Send three separate notes to CRM using contact_id and token from payload (if provided)
         try:
-            if contact_id and LEADCONNECTOR_ACCESS_TOKEN:
+            access_token = payload.get("token")
+            if contact_id and access_token:
                 jobs[job_id]["status"] = "posting_crm_notes"
                 
                 # Send three separate notes
-                send_crm_notes(contact_id, jobs[job_id])
+                send_crm_notes(contact_id, jobs[job_id], access_token)
                 
-            elif contact_id and not LEADCONNECTOR_ACCESS_TOKEN:
-                logger.warning("LEADCONNECTOR_ACCESS_TOKEN not set; skipping CRM note post")
+            elif contact_id and not access_token:
+                logger.warning("No access token provided in payload; skipping CRM note post")
             else:
                 logger.info("No contact_id provided; skipping CRM note post")
         except Exception as post_ex:
