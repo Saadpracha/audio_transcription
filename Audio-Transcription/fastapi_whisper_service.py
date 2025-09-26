@@ -334,15 +334,62 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
     note_body = "📁 **Call Files & Resources**\n\n" + "\n".join(lines)
     return send_crm_note(contact_id, note_body, access_token, "file_links")
 
-def build_public_s3_url(session_id: str, filename: str) -> Optional[str]:
-    """Construct public S3 URL for a given session and filename.
-    Requires S3_BUCKET and AWS_REGION env. Returns None if bucket not set.
-    """
+def _public_s3_base_url() -> Optional[str]:
     if not S3_BUCKET:
         return None
     region = AWS_REGION or 'us-east-1'
-    base = f"https://{S3_BUCKET}.s3.amazonaws.com" if region == 'us-east-1' else f"https://{S3_BUCKET}.s3.{region}.amazonaws.com"
+    return f"https://{S3_BUCKET}.s3.amazonaws.com" if region == 'us-east-1' else f"https://{S3_BUCKET}.s3.{region}.amazonaws.com"
+
+def build_public_s3_url(session_id: str, filename: str) -> Optional[str]:
+    base = _public_s3_base_url()
+    if not base:
+        return None
     return f"{base}/audio/{session_id}/{filename}"
+
+def build_public_s3_url_from_key(key: str) -> Optional[str]:
+    base = _public_s3_base_url()
+    if not base:
+        return None
+    return f"{base}/{key}"
+
+def find_latest_session_files(session_id: str) -> Dict[str, Optional[str]]:
+    """Return dict mapping type->S3 key for latest files with timestamped names.
+    Keys: summary, transcript, call_to_action, prompt. Values are full S3 keys or None.
+    """
+    result: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
+    try:
+        if not S3_BUCKET:
+            return result
+        s3 = get_s3_client()
+        prefix = f"audio/{session_id}/"
+        continuation = None
+        contents = []
+        while True:
+            kwargs = {"Bucket": S3_BUCKET, "Prefix": prefix}
+            if continuation:
+                kwargs["ContinuationToken"] = continuation
+            resp = s3.list_objects_v2(**kwargs)
+            contents.extend(resp.get("Contents", []))
+            if resp.get("IsTruncated"):
+                continuation = resp.get("NextContinuationToken")
+            else:
+                break
+
+        # Pick latest by suffix
+        def pick_latest(suffix: str) -> Optional[str]:
+            candidates = [obj for obj in contents if obj.get("Key", "").endswith(suffix)]
+            if not candidates:
+                return None
+            latest = max(candidates, key=lambda o: o.get("LastModified"))
+            return latest.get("Key")
+
+        result["transcript"] = pick_latest("_diarized.json")
+        result["summary"] = pick_latest("_summary.json")
+        result["call_to_action"] = pick_latest("_call_to_action.json")
+        result["prompt"] = pick_latest("_prompt.json")
+    except Exception as e:
+        logger.warning("Failed to list latest session files for %s: %s", session_id, e)
+    return result
 
 def fetch_json(url: str) -> Optional[dict]:
     try:
@@ -371,22 +418,27 @@ def view_session(request: Request, session_id: str):
     # a manifest if exists, else try the 'most recent' patterns are unknown. We will instead attempt with wildcards not possible over HTTP.
     # Therefore, document expected names and rely on that.
 
-    # Common filenames
-    candidates = {
+    # Prefer latest timestamped files discovered via S3 listing
+    latest_keys = find_latest_session_files(session_id)
+    data = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
+    urls: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
+
+    # For each type, if a key was found use exact URL; otherwise fall back to non-timestamp name
+    fallbacks = {
         "summary": f"{session_id}_summary.json",
         "transcript": f"{session_id}_diarized.json",
         "call_to_action": f"{session_id}_call_to_action.json",
         "prompt": f"{session_id}_prompt.json",
     }
 
-    data = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
-    urls = {}
-    for key, name in candidates.items():
-        url = build_public_s3_url(session_id, name)
+    for key in ["summary", "transcript", "call_to_action", "prompt"]:
+        if latest_keys.get(key):
+            url = build_public_s3_url_from_key(latest_keys[key])  # preserves timestamp
+        else:
+            url = build_public_s3_url(session_id, fallbacks[key])
         urls[key] = url
         if url:
-            obj = fetch_json(url)
-            data[key] = obj
+            data[key] = fetch_json(url)
 
     return templates.TemplateResponse(
         "session_view.html",
