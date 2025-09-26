@@ -702,7 +702,29 @@ def process_job(job_id: str, payload: dict):
         transcript_filename = f"{entity_id}_{timestamp}_diarized.json"
         transcript_path = run_output_dir / transcript_filename
         script_path = (Path(__file__).parent / "audio_transcribe_diarization.py").resolve()
-        cmd = [sys.executable, str(script_path), str(local_path), "-o", str(transcript_path), "-l", payload.get("language", "en")]
+        # Determine CLI model/device/threads from environment; normalize model names to CLI choices
+        model_env = os.getenv("WHISPER_MODEL", MODEL_SIZE)
+        cli_model = (model_env or "small").lower()
+        if cli_model.startswith("large"):
+            cli_model = "large"
+        elif cli_model not in {"tiny", "base", "small", "medium", "large"}:
+            cli_model = "small"
+
+        cli_threads = str(NUM_THREADS)
+        cli_device = DEVICE  # CLI currently supports only "cpu"
+
+        cmd = [
+            sys.executable,
+            str(script_path),
+            str(local_path),
+            "-o", str(transcript_path),
+            "-l", payload.get("language", "en"),
+            "-m", cli_model,
+            "-t", cli_threads,
+            "-d", cli_device,
+        ]
+        if payload.get("no_diarization"):
+            cmd.append("--no-diarization")
         logger.info("Running transcriber: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent))
 
