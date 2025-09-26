@@ -303,35 +303,19 @@ def send_crm_note(contact_id: str, note_body: str, access_token: str, note_type:
 
 
 def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> bool:
-    """Send first note with GUI link (preferred) and raw S3 links as fallback."""
-    # Prefer GUI link for the contact/session
+    """Send note with only GUI link."""
+    # Get GUI link for the contact/session
     session_id = job_data.get("contact_id") or job_data.get("call_id")
     gui_base = os.getenv("PUBLIC_APP_BASE_URL")  # e.g., https://my-domain.com
     gui_link = None
     if session_id and gui_base:
         gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}"
 
-    lines = []
-    if gui_link:
-        lines.append(f"🌐 View Session (GUI): {gui_link}")
-
-    # Raw S3 links (kept, but GUI is primary)
-    if job_data.get("audio_s3_url"):
-        lines.append(f"🎵 Audio File: {job_data['audio_s3_url']}")
-    if job_data.get("transcript_s3_url"):
-        lines.append(f"📝 Transcript: {job_data['transcript_s3_url']}")
-    if job_data.get("summary_s3_url"):
-        lines.append(f"📋 Summary: {job_data['summary_s3_url']}")
-    if job_data.get("call_to_action_s3_url"):
-        lines.append(f"✅ Call to Action: {job_data['call_to_action_s3_url']}")
-    if job_data.get("prompt_s3_url"):
-        lines.append(f"🤖 AI Prompt: {job_data['prompt_s3_url']}")
-
-    if not lines:
-        logger.warning("No links available to send in file links note")
+    if not gui_link:
+        logger.warning("No GUI link available to send in file links note")
         return False
 
-    note_body = "📁 **Call Files & Resources**\n\n" + "\n".join(lines)
+    note_body = f"🌐 **View Call Session**\n\n{gui_link}"
     return send_crm_note(contact_id, note_body, access_token, "file_links")
 
 def _public_s3_base_url() -> Optional[str]:
