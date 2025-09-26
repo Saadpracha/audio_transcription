@@ -82,7 +82,34 @@
         <section>
             <h2>Prompt</h2>
             {% if prompt %}
-                <pre class="json-block">{{ prompt | tojson(indent=2) }}</pre>
+                {% set caller = (prompt.get('caller_information') or {}) %}
+                {% set contact = (prompt.get('contact_information') or {}) %}
+                {% set created_at = prompt.get('created_at') %}
+                {% set prompt_text = prompt.get('prompt') %}
+
+                <div class="prompt-block">
+                    {% if caller.get('full_name') %}
+                        <div><strong>Caller</strong>: {{ caller.get('full_name') }}</div>
+                    {% endif %}
+                    {% if contact %}
+                        <div><strong>Contact</strong>:
+                            {% if contact.get('full_name') %}
+                                {{ contact.get('full_name') }}
+                            {% else %}
+                                {{ contact.get('first_name') or '' }} {{ contact.get('last_name') or '' }}
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    {% if created_at %}
+                        <div class="muted"><strong>Created</strong>: {{ created_at }}</div>
+                    {% endif %}
+                </div>
+
+                {% if prompt_text %}
+                    <div class="prompt-text json-block" style="white-space:pre-wrap">{{ prompt_text | replace('\n', '\n') }}</div>
+                {% else %}
+                    <pre class="json-block">{{ prompt | tojson(indent=2) }}</pre>
+                {% endif %}
             {% else %}
                 <p class="muted">Not available</p>
             {% endif %}
