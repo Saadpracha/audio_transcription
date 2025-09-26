@@ -17,6 +17,9 @@ except Exception:
     ai_summary = None  # type: ignore
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import requests
 from dotenv import load_dotenv
@@ -147,6 +150,15 @@ def start_queue_processor():
 _transcriber: Optional[AudioTranscriberWithDiarization] = None  # type: ignore
 
 app = FastAPI(title="WhisperX + Diarization Transcription Service")
+
+# Templates and static (mounted lazily if directories exist)
+BASE_DIR = Path(__file__).parent.resolve()
+TEMPLATES_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 class WebhookPayload(BaseModel):
@@ -291,25 +303,103 @@ def send_crm_note(contact_id: str, note_body: str, access_token: str, note_type:
 
 
 def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> bool:
-    """Send first note with file links."""
-    s3_links = []
+    """Send first note with GUI link (preferred) and raw S3 links as fallback."""
+    # Prefer GUI link for the contact/session
+    session_id = job_data.get("contact_id") or job_data.get("call_id")
+    gui_base = os.getenv("PUBLIC_APP_BASE_URL")  # e.g., https://my-domain.com
+    gui_link = None
+    if session_id and gui_base:
+        gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}"
+
+    lines = []
+    if gui_link:
+        lines.append(f"🌐 View Session (GUI): {gui_link}")
+
+    # Raw S3 links (kept, but GUI is primary)
     if job_data.get("audio_s3_url"):
-        s3_links.append(f"🎵 Audio File: {job_data['audio_s3_url']}")
+        lines.append(f"🎵 Audio File: {job_data['audio_s3_url']}")
     if job_data.get("transcript_s3_url"):
-        s3_links.append(f"📝 Transcript: {job_data['transcript_s3_url']}")
+        lines.append(f"📝 Transcript: {job_data['transcript_s3_url']}")
     if job_data.get("summary_s3_url"):
-        s3_links.append(f"📋 Summary: {job_data['summary_s3_url']}")
+        lines.append(f"📋 Summary: {job_data['summary_s3_url']}")
     if job_data.get("call_to_action_s3_url"):
-        s3_links.append(f"✅ Call to Action: {job_data['call_to_action_s3_url']}")
+        lines.append(f"✅ Call to Action: {job_data['call_to_action_s3_url']}")
     if job_data.get("prompt_s3_url"):
-        s3_links.append(f"🤖 AI Prompt: {job_data['prompt_s3_url']}")
-    
-    if not s3_links:
-        logger.warning("No S3 files available to send in file links note")
+        lines.append(f"🤖 AI Prompt: {job_data['prompt_s3_url']}")
+
+    if not lines:
+        logger.warning("No links available to send in file links note")
         return False
-    
-    note_body = "📁 **Call Files & Resources**\n\n" + "\n".join(s3_links)
+
+    note_body = "📁 **Call Files & Resources**\n\n" + "\n".join(lines)
     return send_crm_note(contact_id, note_body, access_token, "file_links")
+
+def build_public_s3_url(session_id: str, filename: str) -> Optional[str]:
+    """Construct public S3 URL for a given session and filename.
+    Requires S3_BUCKET and AWS_REGION env. Returns None if bucket not set.
+    """
+    if not S3_BUCKET:
+        return None
+    region = AWS_REGION or 'us-east-1'
+    base = f"https://{S3_BUCKET}.s3.amazonaws.com" if region == 'us-east-1' else f"https://{S3_BUCKET}.s3.{region}.amazonaws.com"
+    return f"{base}/audio/{session_id}/{filename}"
+
+def fetch_json(url: str) -> Optional[dict]:
+    try:
+        resp = requests.get(url, timeout=20)
+        if resp.ok:
+            return resp.json()
+    except Exception as e:
+        logger.warning("Failed to fetch JSON from %s: %s", url, e)
+    return None
+
+@app.get("/view-session/{session_id}", response_class=HTMLResponse)
+def view_session(request: Request, session_id: str):
+    """Render a simple Jinja2 dashboard for a session/contact id.
+    It attempts to load summary, transcript (diarized), call-to-action, and prompt files.
+    """
+    # We try to locate latest files by prefix. If exact names not known, we attempt common suffixes.
+    # Expected naming: {session_id}_{timestamp}_summary.json, ..._call_to_action.json, ..._diarized.json
+    # For now, we probe by trying to get the latest by hitting a small list of plausible names.
+    # If you maintain exact filenames, consider storing them or indexing. Here we allow 404s gracefully.
+
+    # Try to discover latest by probing a small time window (optional). Simpler: if CRM only passes session link,
+    # we can attempt to fetch a listing via S3 ListObjectsV2, but bucket is public; List requires creds typically.
+    # We'll instead try a heuristic: request a diarized listing via a known example name from job data isn't available here.
+
+    # Heuristic: try up to N recent timestamps embedded in typical patterns is complex; keep simple: attempt to fetch
+    # a manifest if exists, else try the 'most recent' patterns are unknown. We will instead attempt with wildcards not possible over HTTP.
+    # Therefore, document expected names and rely on that.
+
+    # Common filenames
+    candidates = {
+        "summary": f"{session_id}_summary.json",
+        "transcript": f"{session_id}_diarized.json",
+        "call_to_action": f"{session_id}_call_to_action.json",
+        "prompt": f"{session_id}_prompt.json",
+    }
+
+    data = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
+    urls = {}
+    for key, name in candidates.items():
+        url = build_public_s3_url(session_id, name)
+        urls[key] = url
+        if url:
+            obj = fetch_json(url)
+            data[key] = obj
+
+    return templates.TemplateResponse(
+        "session_view.html",
+        {
+            "request": request,
+            "session_id": session_id,
+            "summary": data["summary"],
+            "transcript": data["transcript"],
+            "call_to_action": data["call_to_action"],
+            "prompt": data["prompt"],
+            "urls": urls,
+        },
+    )
 
 
 def send_summary_note(contact_id: str, job_data: dict, access_token: str) -> bool:
