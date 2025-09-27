@@ -305,11 +305,17 @@ def send_crm_note(contact_id: str, note_body: str, access_token: str, note_type:
 def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send note with only GUI link."""
     # Get GUI link for the contact/session
-    session_id = job_data.get("contact_id") or job_data.get("call_id")
+    # Use contact_id parameter directly, or fall back to call_id from job_data
+    session_id = contact_id or job_data.get("call_id")
     gui_base = os.getenv("PUBLIC_APP_BASE_URL")  # e.g., https://my-domain.com
+    
+    # Debug logging
+    logger.info(f"Creating GUI link - contact_id: '{contact_id}', session_id: '{session_id}', gui_base: '{gui_base}'")
+    
     gui_link = None
     if session_id and gui_base:
         gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}"
+        logger.info(f"Generated GUI link: '{gui_link}'")
 
     if not gui_link:
         logger.warning("No GUI link available to send in file links note")
