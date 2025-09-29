@@ -9,7 +9,8 @@
 <body>
     <div class="container">
         <header>
-            <h1>Session {{ session_id }}</h1>
+            <h1>Session</h1>
+            <div class="sid">ID: {{ session_id }}</div>
         </header>
 
         <section>
@@ -56,27 +57,7 @@
             {% endif %}
         </section>
 
-        <section>
-            <h2>Transcript</h2>
-            {% if transcript %}
-                {% set segs = transcript.get('segments') or [] %}
-                {% if segs %}
-                    <div class="transcript">
-                        {% for seg in segs %}
-                            <div class="seg">
-                                <span class="time">[{{ '%.2f' % (seg.get('start') or 0) }}]</span>
-                                <span class="speaker">{{ seg.get('speaker') or 'SPEAKER' }}</span>:
-                                <span class="text">{{ seg.get('text') }}</span>
-                            </div>
-                        {% endfor %}
-                    </div>
-                {% else %}
-                    <pre class="json-block">{{ transcript | tojson(indent=2) }}</pre>
-                {% endif %}
-            {% else %}
-                <p class="muted">Not available</p>
-            {% endif %}
-        </section>
+        
 
         <section>
             <h2>Transcript</h2>
