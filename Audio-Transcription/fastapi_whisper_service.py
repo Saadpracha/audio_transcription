@@ -20,6 +20,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from datetime import datetime, timezone
 from pydantic import BaseModel
 import requests
 from dotenv import load_dotenv
@@ -314,7 +315,8 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
     
     gui_link = None
     if session_id and gui_base:
-        gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}"
+        ts = int(time.time())
+        gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}?t={ts}"
         logger.info(f"Generated GUI link: '{gui_link}'")
 
     if not gui_link:
@@ -373,6 +375,14 @@ def find_latest_session_files(session_id: str) -> Dict[str, Optional[str]]:
             latest = max(candidates, key=lambda o: o.get("LastModified"))
             return latest.get("Key")
 
+        # Audio: pick latest by common audio extensions
+        audio_candidates = [obj for obj in contents if obj.get("Key", "").lower().endswith((".wav", ".mp3", ".m4a", ".ogg"))]
+        if audio_candidates:
+            latest_audio = max(audio_candidates, key=lambda o: o.get("LastModified"))
+            result["audio"] = latest_audio.get("Key")
+        else:
+            result["audio"] = None
+
         result["transcript"] = pick_latest("_diarized.json")
         result["summary"] = pick_latest("_summary.json")
         result["call_to_action"] = pick_latest("_call_to_action.json")
@@ -411,7 +421,7 @@ def view_session(request: Request, session_id: str):
     # Prefer latest timestamped files discovered via S3 listing
     latest_keys = find_latest_session_files(session_id)
     data = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
-    urls: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
+    urls: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None, "audio": None}
 
     # For each type, if a key was found use exact URL; otherwise fall back to non-timestamp name
     fallbacks = {
@@ -429,6 +439,20 @@ def view_session(request: Request, session_id: str):
         urls[key] = url
         if url:
             data[key] = fetch_json(url)
+
+    # Audio url if found
+    if latest_keys.get("audio"):
+        urls["audio"] = build_public_s3_url_from_key(latest_keys["audio"]) 
+
+    # Compute human-readable UTC for prompt created_at if available
+    if data.get("prompt") and isinstance(data.get("prompt"), dict):
+        try:
+            created_raw = data["prompt"].get("created_at")
+            if isinstance(created_raw, (int, float)):
+                dt = datetime.fromtimestamp(float(created_raw), tz=timezone.utc)
+                data["prompt"]["created_at_utc"] = dt.strftime("%Y-%m-%d %H:%M UTC")
+        except Exception as _e:
+            pass
 
     return templates.TemplateResponse(
         "session_view.html",

@@ -14,6 +14,28 @@
         </header>
 
         <section>
+            <h2>Transcript</h2>
+            {% if transcript %}
+                {% set segs = transcript.get('segments') or [] %}
+                {% if segs %}
+                    <div class="transcript">
+                        {% for seg in segs %}
+                            <div class="seg">
+                                <span class="time">[{{ '%.2f' % (seg.get('start') or 0) }}]</span>
+                                <span class="speaker">{{ seg.get('speaker') or 'SPEAKER' }}</span>:
+                                <span class="text">{{ seg.get('text') }}</span>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <pre class="json-block">{{ transcript | tojson(indent=2) }}</pre>
+                {% endif %}
+            {% else %}
+                <p class="muted">Not available</p>
+            {% endif %}
+        </section>
+
+        <section>
             <h2>Summary</h2>
             {% if summary %}
                 {% set sum_text = summary.get('summary') or summary.get('summary_text') or summary %}
@@ -100,7 +122,9 @@
                             {% endif %}
                         </div>
                     {% endif %}
-                    {% if created_at %}
+                    {% if prompt.get('created_at_utc') %}
+                        <div class="muted"><strong>Created</strong>: {{ prompt.get('created_at_utc') }}</div>
+                    {% elif created_at %}
                         <div class="muted"><strong>Created</strong>: {{ created_at }}</div>
                     {% endif %}
                 </div>
@@ -116,12 +140,13 @@
         </section>
 
         <section>
-            <h2>Raw Files</h2>
+            <h2>Files</h2>
             <ul>
-                <li>Summary: {% if urls.summary %}<a href="{{ urls.summary }}" target="_blank">Open</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
-                <li>Transcript: {% if urls.transcript %}<a href="{{ urls.transcript }}" target="_blank">Open</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
-                <li>Call To Action: {% if urls.call_to_action %}<a href="{{ urls.call_to_action }}" target="_blank">Open</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
-                <li>Prompt: {% if urls.prompt %}<a href="{{ urls.prompt }}" target="_blank">Open</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>📋 Summary: {% if urls.summary %}<a href="{{ urls.summary }}" target="_blank">{{ urls.summary }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>✅ Call To Action: {% if urls.call_to_action %}<a href="{{ urls.call_to_action }}" target="_blank">{{ urls.call_to_action }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>📝 Transcript: {% if urls.transcript %}<a href="{{ urls.transcript }}" target="_blank">{{ urls.transcript }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>🎵 Audio: {% if urls.audio %}<a href="{{ urls.audio }}" target="_blank">{{ urls.audio }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>🤖 Prompt: {% if urls.prompt %}<a href="{{ urls.prompt }}" target="_blank">{{ urls.prompt }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
             </ul>
         </section>
 
