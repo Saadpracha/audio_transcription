@@ -421,17 +421,16 @@ def view_session(request: Request, session_id: str):
     # Prefer latest timestamped files discovered via S3 listing
     latest_keys = find_latest_session_files(session_id)
     data = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
-    urls: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None, "audio": None}
+    urls: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "prompt": None, "audio": None}
 
     # For each type, if a key was found use exact URL; otherwise fall back to non-timestamp name
     fallbacks = {
         "summary": f"{session_id}_summary.json",
         "transcript": f"{session_id}_diarized.json",
-        "call_to_action": f"{session_id}_call_to_action.json",
         "prompt": f"{session_id}_prompt.json",
     }
 
-    for key in ["summary", "transcript", "call_to_action", "prompt"]:
+    for key in ["summary", "transcript", "prompt"]:
         if latest_keys.get(key):
             url = build_public_s3_url_from_key(latest_keys[key])  # preserves timestamp
         else:
@@ -443,6 +442,12 @@ def view_session(request: Request, session_id: str):
     # Audio url if found
     if latest_keys.get("audio"):
         urls["audio"] = build_public_s3_url_from_key(latest_keys["audio"]) 
+
+    # Extract call to action data from summary file
+    if data.get("summary") and isinstance(data["summary"], dict):
+        call_to_action_data = data["summary"].get("call_to_action")
+        if call_to_action_data:
+            data["call_to_action"] = {"call_to_action": call_to_action_data}
 
     # Compute human-readable UTC for prompt created_at if available
     if data.get("prompt") and isinstance(data.get("prompt"), dict):
@@ -784,11 +789,8 @@ def process_job(job_id: str, payload: dict):
                 # Expected generated files
                 summary_path = run_output_dir / f"{entity_id}_{timestamp}_summary.json"
                 
-                # Check if call-to-action file was created
-                call_to_action_filename = f"{entity_id}_{timestamp}_call_to_action.json"
-                call_to_action_path = run_output_dir / call_to_action_filename
-                if not call_to_action_path.exists():
-                    call_to_action_path = None
+                # Call to action data is now included in summary file
+                call_to_action_path = None
                     
                 # Create prompt.json file if show_prompt is true
                 if payload.get("show_prompt", False):
@@ -850,12 +852,7 @@ def process_job(job_id: str, payload: dict):
             jobs[job_id]["summary_s3_url"] = summary_s3_url
             jobs[job_id]["summary_s3_key"] = summary_s3_key
 
-        # Upload call-to-action file if it exists
-        if call_to_action_path and call_to_action_path.exists():
-            call_to_action_s3_key = f"{s3_base_key}{call_to_action_path.name}"
-            call_to_action_s3_url = upload_to_s3(call_to_action_path, call_to_action_s3_key)
-            jobs[job_id]["call_to_action_s3_url"] = call_to_action_s3_url
-            jobs[job_id]["call_to_action_s3_key"] = call_to_action_s3_key
+        # Call to action data is now included in summary file, no separate upload needed
 
         # Upload prompt file if it exists (when show_prompt=true)
         if prompt_path and prompt_path.exists():

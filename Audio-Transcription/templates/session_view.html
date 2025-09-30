@@ -29,6 +29,24 @@
                         {% endfor %}
                     </ul>
                 {% endif %}
+                
+                <!-- Call to Action items from summary -->
+                {% if summary.get('call_to_action') or summary.get('action_items') %}
+                    {% set items = summary.get('call_to_action') or summary.get('action_items') or [] %}
+                    {% if items %}
+                        <h3>Action Items</h3>
+                        <ul class="checklist">
+                            {% for item in items %}
+                                <li>
+                                    <input type="checkbox" disabled />
+                                    <span class="item">{{ item.get('item') or item }}</span>
+                                    {% if item.get('owner') %}<span class="meta">Owner: {{ item.get('owner') }}</span>{% endif %}
+                                    {% if item.get('due') %}<span class="meta">Due: {{ item.get('due') }}</span>{% endif %}
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% endif %}
+                {% endif %}
             {% else %}
                 <p class="muted">Not available</p>
             {% endif %}
@@ -55,6 +73,21 @@
             {% else %}
                 <p class="muted">Not available</p>
             {% endif %}
+        </section>
+
+        <!-- Call Quality Feedback Box -->
+        <section class="feedback-box">
+            <h2>Call Quality Feedback</h2>
+            <div class="feedback-content">
+                <div class="feedback-section">
+                    <h3>Strengths</h3>
+                    <p class="muted">Feedback on call strengths will be displayed here</p>
+                </div>
+                <div class="feedback-section">
+                    <h3>Improvements</h3>
+                    <p class="muted">Feedback on areas for improvement will be displayed here</p>
+                </div>
+            </div>
         </section>
 
         
@@ -92,6 +125,8 @@
                 <div class="prompt-block">
                     {% if caller.get('full_name') %}
                         <div><strong>Caller</strong>: {{ caller.get('full_name') }}</div>
+                    {% elif caller.get('first_name') or caller.get('last_name') %}
+                        <div><strong>Caller</strong>: {{ caller.get('first_name') or '' }} {{ caller.get('last_name') or '' }}</div>
                     {% endif %}
                     {% if contact %}
                         <div><strong>Contact</strong>:
@@ -123,10 +158,9 @@
             <h2>Files</h2>
             <ul>
                 <li>📋 Summary: {% if urls.summary %}<a href="{{ urls.summary }}" target="_blank">{{ urls.summary }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
-                <li>✅ Call To Action: {% if urls.call_to_action %}<a href="{{ urls.call_to_action }}" target="_blank">{{ urls.call_to_action }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>🤖 Prompt: {% if urls.prompt %}<a href="{{ urls.prompt }}" target="_blank">{{ urls.prompt }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
                 <li>📝 Transcript: {% if urls.transcript %}<a href="{{ urls.transcript }}" target="_blank">{{ urls.transcript }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
                 <li>🎵 Audio: {% if urls.audio %}<a href="{{ urls.audio }}" target="_blank">{{ urls.audio }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
-                <li>🤖 Prompt: {% if urls.prompt %}<a href="{{ urls.prompt }}" target="_blank">{{ urls.prompt }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
             </ul>
         </section>
 

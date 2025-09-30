@@ -65,6 +65,7 @@ Guidelines:
 - Owners: infer from speaker labels where possible. Example: if "Agent" says "I will send the proposal", set owner = "Agent".
 - If dates are mentioned, capture them (e.g. "by Friday"); if not, leave due = "".
 - Feedback should be constructive: balance what went well with what could improve.
+- Use caller information when available to provide more personalized analysis and better identify who is speaking in the transcript.
 
 TRANSCRIPT:
 <<<
@@ -86,10 +87,15 @@ def create_prompt(transcript, prompt_file_path: str = "prompt.json", caller_firs
     # Load prompt template from JSON file
     prompt_template = load_prompt_from_json(prompt_file_path)
     
-    # Add caller information to the transcript if provided
-    caller_info = ""
+    # Add caller information to the prompt if provided
     if caller_first_name or caller_last_name:
         caller_name = f"{caller_first_name} {caller_last_name}".strip()
+        # Add caller context to the prompt instructions
+        caller_context = f"\n\nIMPORTANT CONTEXT:\nThe caller's name is: {caller_name}\nUse this information to provide more personalized and accurate analysis.\n\n"
+        # Insert caller context before the transcript section
+        prompt_template = prompt_template.replace("TRANSCRIPT:\n<<<", f"{caller_context}TRANSCRIPT:\n<<<")
+        
+        # Also add caller information to the transcript for reference
         caller_info = f"\n\nCALLER INFORMATION:\nCaller Name: {caller_name}\n\n"
         full_transcript = caller_info + full_transcript
 
@@ -161,18 +167,17 @@ def save_outputs(parsed_json: dict, base_output_path: str):
         if "improvements" not in call_quality_val or not isinstance(call_quality_val.get("improvements"), list):
             call_quality_val["improvements"] = list(call_quality_val.get("improvements", []))
 
-    # Save summary JSON with embedded call quality feedback
+    # Save summary JSON with embedded call quality feedback and call to action
     with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump({
             "summary": summary_val,
-            "call_quality_feedback": call_quality_val
+            "call_quality_feedback": call_quality_val,
+            "call_to_action": cta_val if cta_val is not None else []
         }, f, indent=4, ensure_ascii=False)
-    print(f"Summary saved to {summary_path}")
+    print(f"Summary saved to {summary_path} (includes call to action data)")
 
-    # Save CTA (normalize to empty list if None)
-    with open(cta_path, 'w', encoding='utf-8') as f:
-        json.dump({"call_to_action": cta_val if cta_val is not None else []}, f, indent=4, ensure_ascii=False)
-    print(f"Call to action saved to {cta_path}")
+    # No longer create separate call to action file
+    print("Call to action data included in summary file")
 
 # Save raw model response when JSON parse fails
 def save_raw_response(raw_text: str, base_output_path: str):
