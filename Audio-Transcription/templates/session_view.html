@@ -62,14 +62,31 @@
         <!-- Call Quality Feedback Box -->
         <section class="feedback-box">
             <h2>Call Quality Feedback</h2>
+            {% set feedback = (summary.get('call_quality_feedback') if summary else None) %}
             <div class="feedback-content">
                 <div class="feedback-section">
                     <h3>Strengths</h3>
-                    <p class="muted">Feedback on call strengths will be displayed here</p>
+                    {% if feedback and feedback.get('strengths') %}
+                        <ul>
+                            {% for s in feedback.get('strengths') %}
+                                <li>{{ s }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="muted">Feedback on call strengths will be displayed here</p>
+                    {% endif %}
                 </div>
                 <div class="feedback-section">
                     <h3>Improvements</h3>
-                    <p class="muted">Feedback on areas for improvement will be displayed here</p>
+                    {% if feedback and feedback.get('improvements') %}
+                        <ul>
+                            {% for s in feedback.get('improvements') %}
+                                <li>{{ s }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="muted">Feedback on areas for improvement will be displayed here</p>
+                    {% endif %}
                 </div>
             </div>
         </section>

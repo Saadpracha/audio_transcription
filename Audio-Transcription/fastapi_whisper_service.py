@@ -445,7 +445,10 @@ def view_session(request: Request, session_id: str):
 
     # Extract call to action data from summary file
     if data.get("summary") and isinstance(data["summary"], dict):
-        call_to_action_data = data["summary"].get("call_to_action")
+        call_to_action_data = (
+            data["summary"].get("call_to_action")
+            or data["summary"].get("call_to_action_items")
+        )
         if call_to_action_data:
             data["call_to_action"] = {"call_to_action": call_to_action_data}
 
