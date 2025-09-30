@@ -90,8 +90,15 @@ def create_prompt(transcript, prompt_file_path: str = "prompt.json", caller_firs
     # Add caller information to the prompt if provided
     if caller_first_name or caller_last_name:
         caller_name = f"{caller_first_name} {caller_last_name}".strip()
-        # Add caller context to the prompt instructions
-        caller_context = f"\n\nIMPORTANT CONTEXT:\nThe caller's name is: {caller_name}\nUse this information to provide more personalized and accurate analysis.\n\n"
+        # Add caller context to the prompt instructions with strict normalization guidance
+        caller_context = (
+            "\n\nIMPORTANT CONTEXT:\n"
+            f"The caller's name is: {caller_name}\n"
+            "Always refer to the caller by this exact name and spelling in all outputs. "
+            "Normalize any ASR misrecognitions of the caller's name (e.g., 'Eliza', 'Aliza') to the provided name above. "
+            "If a company is mentioned for the caller (e.g., ENOX Communication), include it once in the summary as '"
+            f"{caller_name} from <Company>' when clear.\n\n"
+        )
         # Insert caller context before the transcript section
         prompt_template = prompt_template.replace("TRANSCRIPT:\n<<<", f"{caller_context}TRANSCRIPT:\n<<<")
         

@@ -30,23 +30,7 @@
                     </ul>
                 {% endif %}
                 
-                <!-- Call to Action items from summary -->
-                {% if summary.get('call_to_action') or summary.get('action_items') %}
-                    {% set items = summary.get('call_to_action') or summary.get('action_items') or [] %}
-                    {% if items %}
-                        <h3>Action Items</h3>
-                        <ul class="checklist">
-                            {% for item in items %}
-                                <li>
-                                    <input type="checkbox" disabled />
-                                    <span class="item">{{ item.get('item') or item }}</span>
-                                    {% if item.get('owner') %}<span class="meta">Owner: {{ item.get('owner') }}</span>{% endif %}
-                                    {% if item.get('due') %}<span class="meta">Due: {{ item.get('due') }}</span>{% endif %}
-                                </li>
-                            {% endfor %}
-                        </ul>
-                    {% endif %}
-                {% endif %}
+                {# Deliberately do not render action items here. They are displayed in the Call To Action section. #}
             {% else %}
                 <p class="muted">Not available</p>
             {% endif %}

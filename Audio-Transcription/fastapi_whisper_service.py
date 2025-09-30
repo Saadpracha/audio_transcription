@@ -608,34 +608,23 @@ TRANSCRIPT:
 
 
 def send_crm_notes(contact_id: str, job_data: dict, access_token: str):
-    """Send three separate notes to CRM: file links, summary, and call to action."""
-    logger.info("Sending three separate notes to CRM for contact_id=%s", contact_id)
-    
-    # Track success of each note
+    """Send only the GUI link note to CRM."""
+    logger.info("Sending GUI link note to CRM for contact_id=%s", contact_id)
+
+    # Track success of file link note only
     notes_sent = {
-        "file_links": False,
-        "summary": False,
-        "call_to_action": False
+        "file_links": False
     }
-    
-    # Send first note: File links
+
+    # Send only file links note
     notes_sent["file_links"] = send_file_links_note(contact_id, job_data, access_token)
-    
-    # Send second note: Summary
-    notes_sent["summary"] = send_summary_note(contact_id, job_data, access_token)
-    
-    # Send third note: Call to action
-    notes_sent["call_to_action"] = send_call_to_action_note(contact_id, job_data, access_token)
-    
+
     # Log results
-    successful_notes = [note_type for note_type, success in notes_sent.items() if success]
-    failed_notes = [note_type for note_type, success in notes_sent.items() if not success]
-    
-    if successful_notes:
-        logger.info("Successfully sent notes to CRM: %s", ", ".join(successful_notes))
-    if failed_notes:
-        logger.warning("Failed to send notes to CRM: %s", ", ".join(failed_notes))
-    
+    if notes_sent["file_links"]:
+        logger.info("Successfully sent notes to CRM: file_links")
+    else:
+        logger.warning("Failed to send notes to CRM: file_links")
+
     # Store results in job data
     job_data["crm_notes_sent"] = notes_sent
 
