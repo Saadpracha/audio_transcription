@@ -426,6 +426,7 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
         # Add/override our fields
         payload.update({
             "session_id": session_id,
+            "entity_id": job_data.get("entity_id"),  # unique per call
             "contact_id": contact_id,
             "call_id": call_id,
             "gui_link": gui_link,
@@ -468,10 +469,12 @@ def _public_s3_base_url() -> Optional[str]:
     region = AWS_REGION or 'us-east-1'
     return f"https://{S3_BUCKET}.s3.amazonaws.com" if region == 'us-east-1' else f"https://{S3_BUCKET}.s3.{region}.amazonaws.com"
 
-def build_public_s3_url(session_id: str, filename: str) -> Optional[str]:
+def build_public_s3_url(session_id: str, filename: str, customer_slug: Optional[str] = None) -> Optional[str]:
     base = _public_s3_base_url()
     if not base:
         return None
+    if customer_slug:
+        return f"{base}/audio/{customer_slug}/{session_id}/{filename}"
     return f"{base}/audio/{session_id}/{filename}"
 
 def build_public_s3_url_from_key(key: str) -> Optional[str]:
@@ -480,7 +483,7 @@ def build_public_s3_url_from_key(key: str) -> Optional[str]:
         return None
     return f"{base}/{key}"
 
-def find_latest_session_files(session_id: str) -> Dict[str, Optional[str]]:
+def find_latest_session_files(session_id: str, customer_slug: Optional[str] = None) -> Dict[str, Optional[str]]:
     """Return dict mapping type->S3 key for latest files with timestamped names.
     Keys: summary, transcript, call_to_action, prompt. Values are full S3 keys or None.
     """
@@ -489,7 +492,11 @@ def find_latest_session_files(session_id: str) -> Dict[str, Optional[str]]:
         if not S3_BUCKET:
             return result
         s3 = get_s3_client()
-        prefix = f"audio/{session_id}/"
+        # Use customer slug in prefix if available: audio/{slug}/{session_id}/
+        if customer_slug:
+            prefix = f"audio/{customer_slug}/{session_id}/"
+        else:
+            prefix = f"audio/{session_id}/"
         continuation = None
         contents = []
         while True:
@@ -616,7 +623,67 @@ def view_session(request: Request, session_id: str):
 # This simply forwards to the same renderer while accepting and ignoring the slug for routing.
 @app.get("/{customer_slug}/view-session/{session_id}", response_class=HTMLResponse)
 def view_session_with_slug(request: Request, customer_slug: str, session_id: str):
-    return view_session(request, session_id)
+    """Render session view with customer slug context for S3 file discovery."""
+    # Prefer latest timestamped files discovered via S3 listing with slug context
+    latest_keys = find_latest_session_files(session_id, customer_slug)
+    data = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
+    urls: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "prompt": None, "audio": None}
+
+    # For each type, if a key was found use exact URL; otherwise fall back to non-timestamp name
+    fallbacks = {
+        "summary": f"{session_id}_summary.json",
+        "transcript": f"{session_id}_diarized.json",
+        "prompt": f"{session_id}_prompt.json",
+    }
+
+    for key in ["summary", "transcript", "prompt"]:
+        if latest_keys.get(key):
+            url = build_public_s3_url_from_key(latest_keys[key])  # preserves timestamp
+        else:
+            # Build URL with slug context for fallback files
+            if customer_slug:
+                url = build_public_s3_url(session_id, fallbacks[key], customer_slug)
+            else:
+                url = build_public_s3_url(session_id, fallbacks[key])
+        urls[key] = url
+        if url:
+            data[key] = fetch_json(url)
+
+    # Audio url if found
+    if latest_keys.get("audio"):
+        urls["audio"] = build_public_s3_url_from_key(latest_keys["audio"]) 
+
+    # Extract call to action data from summary file
+    if data.get("summary") and isinstance(data["summary"], dict):
+        call_to_action_data = (
+            data["summary"].get("call_to_action")
+            or data["summary"].get("call_to_action_items")
+        )
+        if call_to_action_data:
+            data["call_to_action"] = {"call_to_action": call_to_action_data}
+
+    # Compute human-readable UTC for prompt created_at if available
+    if data.get("prompt") and isinstance(data.get("prompt"), dict):
+        try:
+            created_raw = data["prompt"].get("created_at")
+            if isinstance(created_raw, (int, float)):
+                dt = datetime.fromtimestamp(float(created_raw), tz=timezone.utc)
+                data["prompt"]["created_at_utc"] = dt.strftime("%Y-%m-%d %H:%M UTC")
+        except Exception as _e:
+            pass
+
+    return templates.TemplateResponse(
+        "session_view.html",
+        {
+            "request": request,
+            "session_id": session_id,
+            "summary": data["summary"],
+            "transcript": data["transcript"],
+            "call_to_action": data["call_to_action"],
+            "prompt": data["prompt"],
+            "urls": urls,
+        },
+    )
 
 
 def send_summary_note(contact_id: str, job_data: dict, access_token: str) -> bool:
@@ -829,7 +896,17 @@ def process_job(job_id: str, payload: dict):
         # Prefer contact_id over call_id; maintain call_id for backward compatibility
         contact_id = payload.get("contact_id")
         call_id = payload.get("call_id")
-        entity_id = contact_id or call_id or str(uuid.uuid4())
+        # Create unique session per call: contact_id + call_id + timestamp
+        # This ensures each call gets its own files even for the same contact
+        timestamp = int(time.time())
+        if contact_id and call_id:
+            entity_id = f"{contact_id}_{call_id}_{timestamp}"
+        elif contact_id:
+            entity_id = f"{contact_id}_{timestamp}"
+        elif call_id:
+            entity_id = f"{call_id}_{timestamp}"
+        else:
+            entity_id = f"session_{timestamp}_{uuid.uuid4().hex[:8]}"
 
         jobs[job_id]["status"] = "downloading"
         # Resolve and store customer slug early for downstream uses
@@ -839,9 +916,8 @@ def process_job(job_id: str, payload: dict):
             pass
         # build a readable persisted audio name and a temp download target
         # Add timestamp to ensure unique file names
-        timestamp = int(time.time())
-        readable_name = derive_readable_audio_name(audio_url, f"{entity_id}_{timestamp}_{uuid.uuid4().hex[:8]}.wav")
-        temp_download_name = f"{entity_id}_{timestamp}_{uuid.uuid4().hex[:8]}"
+        readable_name = derive_readable_audio_name(audio_url, f"{entity_id}_{uuid.uuid4().hex[:8]}.wav")
+        temp_download_name = f"{entity_id}_{uuid.uuid4().hex[:8]}"
         local_path = AUDIO_TMP_DIR / temp_download_name
         # support basic auth via audio_auth or headers
         audio_auth = None
@@ -858,7 +934,7 @@ def process_job(job_id: str, payload: dict):
         run_output_dir = OUTPUT_DIR / run_dir_name
         run_output_dir.mkdir(parents=True, exist_ok=True)
 
-        transcript_filename = f"{entity_id}_{timestamp}_diarized.json"
+        transcript_filename = f"{entity_id}_diarized.json"
         transcript_path = run_output_dir / transcript_filename
         script_path = (Path(__file__).parent / "audio_transcribe_diarization.py").resolve()
         # Determine CLI model/device/threads from environment; normalize model names to CLI choices
@@ -896,7 +972,7 @@ def process_job(job_id: str, payload: dict):
                 jobs[job_id]["status"] = "summarizing"
                 # Use a proper base output file so ai_summary writes:
                 # <base>.json, <base>_summary.json, <base>_call_to_action.json
-                base_output_filename = f"{entity_id}_{timestamp}.json"
+                base_output_filename = f"{entity_id}.json"
                 base_output_path = run_output_dir / base_output_filename
                 
                 # Get caller and contact information from payload
@@ -927,14 +1003,14 @@ def process_job(job_id: str, payload: dict):
                 )
                 
                 # Expected generated files
-                summary_path = run_output_dir / f"{entity_id}_{timestamp}_summary.json"
+                summary_path = run_output_dir / f"{entity_id}_summary.json"
                 
                 # Call to action data is now included in summary file
                 call_to_action_path = None
                     
                 # Create prompt.json file if show_prompt is true
                 if payload.get("show_prompt", False):
-                    prompt_filename = f"{entity_id}_{timestamp}_prompt.json"
+                    prompt_filename = f"{entity_id}_prompt.json"
                     prompt_path = run_output_dir / prompt_filename
                     create_prompt_file(prompt_path, caller_name, contact_first_name, contact_last_name)
                     
@@ -971,7 +1047,12 @@ def process_job(job_id: str, payload: dict):
 
         # Upload files to S3
         jobs[job_id]["status"] = "uploading_to_s3"
-        s3_base_key = f"audio/{entity_id}/"
+        # Use customer slug in S3 path if available: audio/{slug}/{contact_id}/
+        customer_slug = jobs[job_id].get("customer_slug")
+        if customer_slug:
+            s3_base_key = f"audio/{customer_slug}/{entity_id}/"
+        else:
+            s3_base_key = f"audio/{entity_id}/"
         
         # Upload audio file
         audio_s3_key = f"{s3_base_key}{readable_name}"
@@ -1047,7 +1128,8 @@ def process_job(job_id: str, payload: dict):
         jobs[job_id]["status"] = "done"
         jobs[job_id]["finished_at"] = time.time()
         jobs[job_id]["s3_base_key"] = s3_base_key
-        jobs[job_id]["contact_id"] = contact_id
+        jobs[job_id]["entity_id"] = entity_id  # unique per call
+        jobs[job_id]["contact_id"] = contact_id  # original contact for display
         jobs[job_id]["call_id"] = call_id
 
         logger.info("Job %s finished successfully (simple mode)", job_id)
