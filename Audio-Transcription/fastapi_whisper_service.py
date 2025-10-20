@@ -376,7 +376,7 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
     if session_id and gui_base:
         ts = int(time.time())
         if customer_slug:
-            gui_link = f"{gui_base.rstrip('/')}/{customer_slug}/view-session/{session_id}?t={ts}"
+            gui_link = f"{gui_base.rstrip('/')}/view-session/{customer_slug}/{session_id}?t={ts}"
         else:
             gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}?t={ts}"
         logger.info(f"Generated GUI link: '{gui_link}'")
@@ -394,9 +394,9 @@ def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = Non
         gui_base = os.getenv("PUBLIC_APP_BASE_URL")
         if session_id and gui_base:
             ts = int(time.time())
-            if customer_slug:
-                return f"{gui_base.rstrip('/')}/{customer_slug}/view-session/{session_id}?t={ts}"
-            return f"{gui_base.rstrip('/')}/view-session/{session_id}?t={ts}"
+        if customer_slug:
+            return f"{gui_base.rstrip('/')}/view-session/{customer_slug}/{session_id}?t={ts}"
+        return f"{gui_base.rstrip('/')}/view-session/{session_id}?t={ts}"
     except Exception:
         pass
     return None
@@ -620,9 +620,8 @@ def view_session(request: Request, session_id: str):
     )
 
 
-# Support tenant-prefixed GUI links like /{customer_slug}/view-session/{session_id}
-# This simply forwards to the same renderer while accepting and ignoring the slug for routing.
-@app.get("/{customer_slug}/view-session/{session_id}", response_class=HTMLResponse)
+# Support tenant-prefixed GUI links like /view-session/{customer_slug}/{session_id}
+@app.get("/view-session/{customer_slug}/{session_id}", response_class=HTMLResponse)
 def view_session_with_slug(request: Request, customer_slug: str, session_id: str):
     """Render session view with customer slug context for S3 file discovery."""
     # Prefer latest timestamped files discovered via S3 listing with slug context
@@ -1183,12 +1182,23 @@ def webhook_listener(payload: dict):
     job_id = str(uuid.uuid4())
     contact_id = payload.get("contact_id")
     call_id = payload.get("call_id")
-    entity_id = contact_id or call_id or str(uuid.uuid4())
+    # Create unique session per call: contact_id + call_id + timestamp
+    # This ensures each call gets its own files even for the same contact
+    timestamp = int(time.time())
+    if contact_id and call_id:
+        entity_id = f"{contact_id}_{call_id}_{timestamp}"
+    elif contact_id:
+        entity_id = f"{contact_id}_{timestamp}"
+    elif call_id:
+        entity_id = f"{call_id}_{timestamp}"
+    else:
+        entity_id = f"session_{timestamp}_{uuid.uuid4().hex[:8]}"
     
     # Initialize job status
     jobs[job_id] = {
         "status": "queued", 
         "created_at": time.time(), 
+        "entity_id": entity_id,  # unique per call
         "contact_id": contact_id,
         "call_id": call_id,
         "queue_position": 0
@@ -1203,6 +1213,7 @@ def webhook_listener(payload: dict):
     return {
         "job_id": job_id, 
         "status_url": f"/jobs/{job_id}",
+        "entity_id": entity_id,  # unique per call
         "contact_id": contact_id,
         "call_id": call_id,
         "status": "queued",
