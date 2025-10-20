@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 import requests
 from dotenv import load_dotenv
+import re
 
 # Optional parts
 import boto3
@@ -168,6 +169,14 @@ class WebhookPayload(BaseModel):
     contact_id: Optional[str] = None
     # New fields from Make.com
     token: Optional[str] = None
+    make_webhook_url: Optional[str] = None
+    client_webhook_url: Optional[str] = None   # optional second webhook
+    extra_webhook_urls: Optional[list[str]] = None  # optional list of additional webhooks
+    # Tenant/customer routing
+    customer_slug: Optional[str] = None  # e.g., "brix" to render /brix/view-session/{id}
+    customer_id: Optional[str] = None    # used with CUSTOMER_SLUG_MAP if provided
+    account_id: Optional[str] = None     # aliases supported for mapping
+    location_id: Optional[str] = None
     caller_name: Optional[str] = None
     contact_first_name: Optional[str] = None
     contact_last_name: Optional[str] = None
@@ -303,6 +312,53 @@ def send_crm_note(contact_id: str, note_body: str, access_token: str, note_type:
         return False
 
 
+def _sanitize_slug(value: str) -> str:
+    """Sanitize a slug to contain lowercase letters, digits, and dashes only."""
+    value = (value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9-]", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
+    return value
+
+def _load_customer_slug_map() -> Dict[str, str]:
+    """Load CUSTOMER_SLUG_MAP from env as JSON dict: {"account_id": "slug", ...}."""
+    try:
+        raw = os.getenv("CUSTOMER_SLUG_MAP", "").strip()
+        if not raw:
+            return {}
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            # sanitize values
+            return {str(k): _sanitize_slug(str(v)) for k, v in data.items()}
+    except Exception as e:
+        logger.warning("Failed to parse CUSTOMER_SLUG_MAP: %s", e)
+    return {}
+
+def resolve_customer_slug_from_payload(payload: Dict[str, Any]) -> Optional[str]:
+    """Resolve customer slug using payload fields or CUSTOMER_SLUG_MAP env.
+
+    Priority:
+      1) payload.customer_slug or payload.slug (used directly after sanitization)
+      2) payload.customer_id/account_id/location_id looked up in CUSTOMER_SLUG_MAP
+    """
+    try:
+        if not isinstance(payload, dict):
+            return None
+        # Check both customer_slug and slug (alias)
+        slug_value = payload.get("customer_slug") or payload.get("slug")
+        if slug_value:
+            return _sanitize_slug(str(slug_value))
+        slug_map = _load_customer_slug_map()
+        for key in ("customer_id", "account_id", "location_id"):
+            identifier = payload.get(key)
+            if identifier is None:
+                continue
+            identifier_str = str(identifier)
+            if identifier_str in slug_map:
+                return slug_map[identifier_str]
+    except Exception:
+        pass
+    return None
+
 def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send note with only GUI link."""
     # Get GUI link for the contact/session
@@ -314,9 +370,13 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
     logger.info(f"Creating GUI link - contact_id: '{contact_id}', session_id: '{session_id}', gui_base: '{gui_base}'")
     
     gui_link = None
+    customer_slug = resolve_customer_slug_from_payload(job_data.get("payload", {}))
     if session_id and gui_base:
         ts = int(time.time())
-        gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}?t={ts}"
+        if customer_slug:
+            gui_link = f"{gui_base.rstrip('/')}/{customer_slug}/view-session/{session_id}?t={ts}"
+        else:
+            gui_link = f"{gui_base.rstrip('/')}/view-session/{session_id}?t={ts}"
         logger.info(f"Generated GUI link: '{gui_link}'")
 
     if not gui_link:
@@ -325,6 +385,71 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
 
     note_body = f"🌐 **View Call Session**\n\n{gui_link}"
     return send_crm_note(contact_id, note_body, access_token, "file_links")
+
+def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = None) -> Optional[str]:
+    """Construct a GUI link for the given session/contact id using PUBLIC_APP_BASE_URL."""
+    try:
+        gui_base = os.getenv("PUBLIC_APP_BASE_URL")
+        if session_id and gui_base:
+            ts = int(time.time())
+            if customer_slug:
+                return f"{gui_base.rstrip('/')}/{customer_slug}/view-session/{session_id}?t={ts}"
+            return f"{gui_base.rstrip('/')}/view-session/{session_id}?t={ts}"
+    except Exception:
+        pass
+    return None
+
+def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Optional[str], webhook_url: Optional[str] = None, original_payload: Optional[dict] = None, job_id: Optional[str] = None) -> bool:
+    """Send the GUI link (and basic metadata) to a Make.com webhook for Sheets/Excel automations.
+
+    The webhook URL is taken from the explicit `webhook_url` argument, or from the
+    MAKE_WEBHOOK_URL environment variable if not provided.
+    """
+    try:
+        url = webhook_url or os.getenv("MAKE_WEBHOOK_URL")
+        if not url:
+            logger.info("No Make.com webhook URL provided; skipping Make webhook post")
+            return False
+
+        session_id = contact_id or call_id
+        customer_slug = resolve_customer_slug_from_payload(original_payload or {})
+        gui_link = build_gui_link(session_id, customer_slug)
+        if not gui_link:
+            logger.warning("Could not build GUI link for Make.com webhook; missing session_id or PUBLIC_APP_BASE_URL")
+            return False
+
+        # Start with original payload (what Make.com sent us) to echo data back
+        payload: Dict[str, Any] = dict(original_payload or {})
+
+        # Add/override our fields
+        payload.update({
+            "session_id": session_id,
+            "contact_id": contact_id,
+            "call_id": call_id,
+            "gui_link": gui_link,
+            "created_at": int(time.time()),
+            "job_id": job_id,
+        })
+
+        # Include file URLs if available to help downstream automations
+        file_fields = {
+            "audio_url": job_data.get("audio_s3_url"),
+            "transcript_url": job_data.get("transcript_s3_url"),
+            "summary_url": job_data.get("summary_s3_url"),
+            "prompt_url": job_data.get("prompt_s3_url"),
+        }
+        payload["files"] = {k: v for k, v in file_fields.items() if v}
+
+        logger.info("Posting GUI link to outbound webhook: %s", url)
+        resp = requests.post(url, json=payload, timeout=20)
+        if not resp.ok:
+            logger.warning("Outbound webhook post failed: %s %s", resp.status_code, resp.text)
+            return False
+        logger.info("Outbound webhook post succeeded")
+        return True
+    except Exception as e:
+        logger.warning("Failed to send Make.com webhook: %s", e)
+        return False
 
 def _public_s3_base_url() -> Optional[str]:
     if not S3_BUCKET:
@@ -689,6 +814,11 @@ def process_job(job_id: str, payload: dict):
         entity_id = contact_id or call_id or str(uuid.uuid4())
 
         jobs[job_id]["status"] = "downloading"
+        # Resolve and store customer slug early for downstream uses
+        try:
+            jobs[job_id]["customer_slug"] = resolve_customer_slug_from_payload(payload)  # optional
+        except Exception:
+            pass
         # build a readable persisted audio name and a temp download target
         # Add timestamp to ensure unique file names
         timestamp = int(time.time())
@@ -853,13 +983,40 @@ def process_job(job_id: str, payload: dict):
             jobs[job_id]["prompt_s3_url"] = prompt_s3_url
             jobs[job_id]["prompt_s3_key"] = prompt_s3_key
 
-        # Send three separate notes to CRM using contact_id and token from payload (if provided)
+        # Send GUI link to Make.com webhook if configured
+        try:
+            # Collect all outbound webhooks: env default, make.com, client-specific, and extras
+            webhook_urls = []
+            env_url = os.getenv("MAKE_WEBHOOK_URL")
+            if env_url:
+                webhook_urls.append(env_url)
+            if payload.get("make_webhook_url"):
+                webhook_urls.append(payload.get("make_webhook_url"))
+            if payload.get("client_webhook_url"):
+                webhook_urls.append(payload.get("client_webhook_url"))
+            if isinstance(payload.get("extra_webhook_urls"), list):
+                webhook_urls.extend([u for u in payload.get("extra_webhook_urls") if isinstance(u, str) and u])
+
+            # De-duplicate while preserving order
+            seen = set()
+            unique_urls = []
+            for u in webhook_urls:
+                if u not in seen:
+                    seen.add(u)
+                    unique_urls.append(u)
+
+            for url in unique_urls:
+                send_make_webhook(jobs[job_id], contact_id, call_id, url, original_payload=payload, job_id=job_id)
+        except Exception as make_ex:
+            logger.warning("Unexpected error while posting to Make.com webhook: %s", make_ex)
+
+        # Send GUI link note to CRM using contact_id and token from payload (if provided)
         try:
             access_token = payload.get("token")
             if contact_id and access_token:
                 jobs[job_id]["status"] = "posting_crm_notes"
                 
-                # Send three separate notes
+                # Send only file links note
                 send_crm_notes(contact_id, jobs[job_id], access_token)
                 
             elif contact_id and not access_token:
@@ -901,6 +1058,9 @@ def webhook_listener(payload: dict):
     {
       "audio": "https://api.twilio.com/.../Recordings/RExxx",
       "contact_id": "abc123",
+      "make_webhook_url": "https://hook.integromat.com/xxxxx",  # optional; else uses MAKE_WEBHOOK_URL env
+      "customer_slug": "brix",                                   # optional; results in /brix/view-session/{id}
+      "customer_id": "cust_001",                                 # optional; resolved via CUSTOMER_SLUG_MAP
       "caller_first_name": "John",
       "caller_last_name": "Doe",
       "show_prompt": true,
