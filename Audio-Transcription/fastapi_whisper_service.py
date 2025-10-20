@@ -493,23 +493,32 @@ def find_latest_session_files(session_id: str, customer_slug: Optional[str] = No
         if not S3_BUCKET:
             return result
         s3 = get_s3_client()
-        # Use customer slug in prefix if available: audio/{slug}/{session_id}/
+        
+        # Try both slug-based and non-slug-based paths to handle migration
+        prefixes_to_try = []
         if customer_slug:
-            prefix = f"audio/{customer_slug}/{session_id}/"
-        else:
-            prefix = f"audio/{session_id}/"
-        continuation = None
+            prefixes_to_try.append(f"audio/{customer_slug}/{session_id}/")
+        prefixes_to_try.append(f"audio/{session_id}/")
+        
+        logger.info(f"Searching S3 prefixes: {prefixes_to_try}")
+        
         contents = []
-        while True:
-            kwargs = {"Bucket": S3_BUCKET, "Prefix": prefix}
-            if continuation:
-                kwargs["ContinuationToken"] = continuation
-            resp = s3.list_objects_v2(**kwargs)
-            contents.extend(resp.get("Contents", []))
-            if resp.get("IsTruncated"):
-                continuation = resp.get("NextContinuationToken")
-            else:
+        for prefix in prefixes_to_try:
+            continuation = None
+            while True:
+                kwargs = {"Bucket": S3_BUCKET, "Prefix": prefix}
+                if continuation:
+                    kwargs["ContinuationToken"] = continuation
+                resp = s3.list_objects_v2(**kwargs)
+                contents.extend(resp.get("Contents", []))
+                if resp.get("IsTruncated"):
+                    continuation = resp.get("NextContinuationToken")
+                else:
+                    break
+            if contents:  # If we found files in this prefix, use them
                 break
+        
+        logger.info(f"Found {len(contents)} S3 objects")
 
         # Pick latest by suffix
         def pick_latest(suffix: str) -> Optional[str]:
@@ -624,8 +633,10 @@ def view_session(request: Request, session_id: str):
 @app.get("/view-session/{customer_slug}/{session_id}", response_class=HTMLResponse)
 def view_session_with_slug(request: Request, customer_slug: str, session_id: str):
     """Render session view with customer slug context for S3 file discovery."""
+    logger.info(f"Slug-aware route: customer_slug='{customer_slug}', session_id='{session_id}'")
     # Prefer latest timestamped files discovered via S3 listing with slug context
     latest_keys = find_latest_session_files(session_id, customer_slug)
+    logger.info(f"Found latest keys: {latest_keys}")
     data = {"summary": None, "transcript": None, "call_to_action": None, "prompt": None}
     urls: Dict[str, Optional[str]] = {"summary": None, "transcript": None, "prompt": None, "audio": None}
 
