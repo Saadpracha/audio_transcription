@@ -172,6 +172,8 @@ class WebhookPayload(BaseModel):
     make_webhook_url: Optional[str] = None
     client_webhook_url: Optional[str] = None   # optional second webhook
     extra_webhook_urls: Optional[list[str]] = None  # optional list of additional webhooks
+    # Google Sheets integration
+    googlesheet: Optional[str] = None  # sheet id to echo back to Make.com
     # Tenant/customer routing
     customer_slug: Optional[str] = None  # e.g., "brix" to render /brix/view-session/{id}
     customer_id: Optional[str] = None    # used with CUSTOMER_SLUG_MAP if provided
@@ -430,6 +432,15 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "created_at": int(time.time()),
             "job_id": job_id,
         })
+
+        # Normalize/echo Google Sheet identifier to help downstream mapping
+        try:
+            sheet_id = (original_payload or {}).get("googlesheet")
+            if sheet_id:
+                payload["googlesheet"] = sheet_id
+                payload["googlesheet_id"] = sheet_id  # convenience alias
+        except Exception:
+            pass
 
         # Include file URLs if available to help downstream automations
         file_fields = {
