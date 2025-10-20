@@ -601,6 +601,13 @@ def view_session(request: Request, session_id: str):
     )
 
 
+# Support tenant-prefixed GUI links like /{customer_slug}/view-session/{session_id}
+# This simply forwards to the same renderer while accepting and ignoring the slug for routing.
+@app.get("/{customer_slug}/view-session/{session_id}", response_class=HTMLResponse)
+def view_session_with_slug(request: Request, customer_slug: str, session_id: str):
+    return view_session(request, session_id)
+
+
 def send_summary_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send second note with summary."""
     summary_s3_url = job_data.get("summary_s3_url")
