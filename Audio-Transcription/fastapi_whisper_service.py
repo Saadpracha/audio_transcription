@@ -902,6 +902,11 @@ def process_job(job_id: str, payload: dict):
     transcript_path = None
 
     try:
+        # Debug: Log the payload structure
+        logger.info("Job %s payload keys: %s", job_id, list(payload.keys()) if isinstance(payload, dict) else "Not a dict")
+        logger.info("Job %s payload type: %s", job_id, type(payload))
+        logger.info("Job %s payload audio value: %s", job_id, payload.get("audio") if isinstance(payload, dict) else "N/A")
+        
         audio_url = payload.get("audio")
         if not audio_url:
             raise ValueError("payload must include 'audio' url")
@@ -1191,6 +1196,8 @@ def webhook_listener(payload: dict):
     }
     """
     logger.info("Received webhook payload: keys=%s", list(payload.keys()))
+    logger.info("Received webhook payload audio value: %s", payload.get("audio"))
+    logger.info("Received webhook payload type: %s", type(payload))
     job_id = str(uuid.uuid4())
     contact_id = payload.get("contact_id")
     call_id = payload.get("call_id")
