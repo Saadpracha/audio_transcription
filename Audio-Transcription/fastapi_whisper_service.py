@@ -439,11 +439,15 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
         # Normalize/echo Google Sheet identifier to help downstream mapping
         try:
             sheet_id = (original_payload or {}).get("googlesheet")
+            logger.info("Google Sheet ID from original payload: %s", sheet_id)
             if sheet_id:
                 payload["googlesheet"] = sheet_id
                 payload["googlesheet_id"] = sheet_id  # convenience alias
-        except Exception:
-            pass
+                logger.info("Set googlesheet and googlesheet_id to: %s", sheet_id)
+            else:
+                logger.warning("No googlesheet ID found in original payload")
+        except Exception as e:
+            logger.warning("Error processing googlesheet ID: %s", e)
 
         # Include file URLs if available to help downstream automations
         file_fields = {
@@ -455,6 +459,8 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
         payload["files"] = {k: v for k, v in file_fields.items() if v}
 
         logger.info("Posting GUI link to outbound webhook: %s", url)
+        logger.info("Final webhook payload googlesheet: %s", payload.get("googlesheet"))
+        logger.info("Final webhook payload googlesheet_id: %s", payload.get("googlesheet_id"))
         resp = requests.post(url, json=payload, timeout=20)
         if not resp.ok:
             logger.warning("Outbound webhook post failed: %s %s", resp.status_code, resp.text)
@@ -929,6 +935,11 @@ def process_job(job_id: str, payload: dict):
         else:
             entity_id = f"session_{timestamp}_{uuid.uuid4().hex[:8]}"
 
+        # Store entity_id early so it's available for webhooks
+        jobs[job_id]["entity_id"] = entity_id
+        jobs[job_id]["contact_id"] = contact_id
+        jobs[job_id]["call_id"] = call_id
+
         jobs[job_id]["status"] = "downloading"
         # Resolve and store customer slug early for downstream uses
         try:
@@ -1126,6 +1137,7 @@ def process_job(job_id: str, payload: dict):
                     unique_urls.append(u)
 
             for url in unique_urls:
+                logger.info("Sending webhook to URL: %s", url)
                 send_make_webhook(jobs[job_id], contact_id, call_id, url, original_payload=payload, job_id=job_id)
         except Exception as make_ex:
             logger.warning("Unexpected error while posting to Make.com webhook: %s", make_ex)
@@ -1149,9 +1161,6 @@ def process_job(job_id: str, payload: dict):
         jobs[job_id]["status"] = "done"
         jobs[job_id]["finished_at"] = time.time()
         jobs[job_id]["s3_base_key"] = s3_base_key
-        jobs[job_id]["entity_id"] = entity_id  # unique per call
-        jobs[job_id]["contact_id"] = contact_id  # original contact for display
-        jobs[job_id]["call_id"] = call_id
 
         logger.info("Job %s finished successfully (simple mode)", job_id)
 
@@ -1202,6 +1211,7 @@ def webhook_listener(payload: dict):
     logger.info("Received webhook payload: keys=%s", list(payload.keys()))
     logger.info("Received webhook payload audio value: %s", payload.get("audio"))
     logger.info("Received webhook payload type: %s", type(payload))
+    logger.info("Received webhook payload googlesheet: %s", payload.get("googlesheet"))
     job_id = str(uuid.uuid4())
     contact_id = payload.get("contact_id")
     call_id = payload.get("call_id")
