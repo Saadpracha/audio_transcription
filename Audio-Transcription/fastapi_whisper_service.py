@@ -364,8 +364,8 @@ def resolve_customer_slug_from_payload(payload: Dict[str, Any]) -> Optional[str]
 def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send note with only GUI link."""
     # Get GUI link for the contact/session
-    # Use the unique entity_id for file discovery, which includes timestamp for differentiation
-    session_id = job_data.get("entity_id") or contact_id or job_data.get("call_id")
+    # Use contact_id for GUI link (without timestamp) - the S3 search will handle finding timestamped files
+    session_id = contact_id or job_data.get("call_id")
     gui_base = os.getenv("PUBLIC_APP_BASE_URL")  # e.g., https://my-domain.com
     
     # Debug logging
@@ -390,7 +390,7 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
 
 def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = None) -> Optional[str]:
     """Construct a GUI link for the given session/contact id using PUBLIC_APP_BASE_URL.
-    session_id should be the full entity_id (including timestamp) for proper file differentiation."""
+    session_id should be the contact_id (without timestamp) - the S3 search will handle finding timestamped files."""
     try:
         gui_base = os.getenv("PUBLIC_APP_BASE_URL")
         if session_id and gui_base:
@@ -414,8 +414,8 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             logger.info("No Make.com webhook URL provided; skipping Make webhook post")
             return False
 
-        # Use the unique entity_id for file discovery, which includes timestamp for differentiation
-        session_id = job_data.get("entity_id") or contact_id or call_id
+        # Use contact_id for GUI link (without timestamp) - the S3 search will handle finding timestamped files
+        session_id = contact_id or call_id
         customer_slug = resolve_customer_slug_from_payload(original_payload or {})
         gui_link = build_gui_link(session_id, customer_slug)
         if not gui_link:
@@ -495,11 +495,15 @@ def find_latest_session_files(session_id: str, customer_slug: Optional[str] = No
             return result
         s3 = get_s3_client()
         
-        # Try both slug-based and non-slug-based paths to handle migration
+        # Try multiple path patterns to handle different naming conventions
         prefixes_to_try = []
         if customer_slug:
+            # Try exact session_id match first
             prefixes_to_try.append(f"audio/{customer_slug}/{session_id}/")
+            # Try session_id with timestamp pattern (entity_id format)
+            prefixes_to_try.append(f"audio/{customer_slug}/{session_id}_")
         prefixes_to_try.append(f"audio/{session_id}/")
+        prefixes_to_try.append(f"audio/{session_id}_")
         
         logger.info(f"Searching S3 prefixes: {prefixes_to_try}")
         
