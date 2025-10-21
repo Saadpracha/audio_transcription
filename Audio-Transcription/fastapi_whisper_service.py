@@ -393,12 +393,16 @@ def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = Non
     session_id should be the entity_id (with timestamp) to match S3 folder structure."""
     try:
         gui_base = os.getenv("PUBLIC_APP_BASE_URL")
+        logger.info("Building GUI link - session_id: %s, customer_slug: %s, gui_base: %s", session_id, customer_slug, gui_base)
         if session_id and gui_base:
             if customer_slug:
-                return f"{gui_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
-            return f"{gui_base.rstrip('/')}/view-session/{session_id}"
-    except Exception:
-        pass
+                link = f"{gui_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
+            else:
+                link = f"{gui_base.rstrip('/')}/view-session/{session_id}"
+            logger.info("Generated GUI link: %s", link)
+            return link
+    except Exception as e:
+        logger.warning("Error building GUI link: %s", e)
     return None
 
 def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Optional[str], webhook_url: Optional[str] = None, original_payload: Optional[dict] = None, job_id: Optional[str] = None) -> bool:
@@ -415,6 +419,8 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
 
         # Use entity_id for GUI link (with timestamp) to match S3 folder structure
         session_id = job_data.get("entity_id") or contact_id or call_id
+        logger.info("Webhook - job_data entity_id: %s", job_data.get("entity_id"))
+        logger.info("Webhook - session_id for GUI: %s", session_id)
         customer_slug = resolve_customer_slug_from_payload(original_payload or {})
         gui_link = build_gui_link(session_id, customer_slug)
         if not gui_link:
@@ -1137,6 +1143,7 @@ def process_job(job_id: str, payload: dict):
 
             for url in unique_urls:
                 logger.info("Sending webhook to URL: %s", url)
+                logger.info("Job data entity_id: %s", jobs[job_id].get("entity_id"))
                 send_make_webhook(jobs[job_id], contact_id, call_id, url, original_payload=payload, job_id=job_id)
         except Exception as make_ex:
             logger.warning("Unexpected error while posting to Make.com webhook: %s", make_ex)
