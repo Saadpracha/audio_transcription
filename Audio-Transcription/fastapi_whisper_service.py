@@ -364,7 +364,7 @@ def resolve_customer_slug_from_payload(payload: Dict[str, Any]) -> Optional[str]
 def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> bool:
     """Send note with only GUI link."""
     # Get GUI link for the contact/session
-    # Use the unique entity_id for file discovery, but contact_id for display
+    # Use the unique entity_id for file discovery, which includes timestamp for differentiation
     session_id = job_data.get("entity_id") or contact_id or job_data.get("call_id")
     gui_base = os.getenv("PUBLIC_APP_BASE_URL")  # e.g., https://my-domain.com
     
@@ -389,7 +389,8 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
     return send_crm_note(contact_id, note_body, access_token, "file_links")
 
 def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = None) -> Optional[str]:
-    """Construct a GUI link for the given session/contact id using PUBLIC_APP_BASE_URL."""
+    """Construct a GUI link for the given session/contact id using PUBLIC_APP_BASE_URL.
+    session_id should be the full entity_id (including timestamp) for proper file differentiation."""
     try:
         gui_base = os.getenv("PUBLIC_APP_BASE_URL")
         if session_id and gui_base:
@@ -413,7 +414,7 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             logger.info("No Make.com webhook URL provided; skipping Make webhook post")
             return False
 
-        # Use the unique entity_id for file discovery, but contact_id for display
+        # Use the unique entity_id for file discovery, which includes timestamp for differentiation
         session_id = job_data.get("entity_id") or contact_id or call_id
         customer_slug = resolve_customer_slug_from_payload(original_payload or {})
         gui_link = build_gui_link(session_id, customer_slug)
