@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from datetime import datetime, timezone
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import requests
 from dotenv import load_dotenv
 import re
@@ -174,8 +174,9 @@ class WebhookPayload(BaseModel):
     extra_webhook_urls: Optional[list[str]] = None  # optional list of additional webhooks
     # Google Sheets integration
     googlesheet: Optional[str] = None  # sheet id to echo back to Make.com
-    # Tenant/customer routing
+    # Tenant/customer routing - support both old and new field names
     customer_slug: Optional[str] = None  # e.g., "brix" to render /brix/view-session/{id}
+    slug: Optional[str] = None  # alias for customer_slug (new client format)
     customer_id: Optional[str] = None    # used with CUSTOMER_SLUG_MAP if provided
     account_id: Optional[str] = None     # aliases supported for mapping
     location_id: Optional[str] = None
@@ -186,6 +187,13 @@ class WebhookPayload(BaseModel):
     language: Optional[str] = "en"
     no_diarization: Optional[bool] = False
     # allow additional fields; Pydantic will ignore unknowns unless configured otherwise
+
+    @validator('show_prompt', pre=True)
+    def convert_show_prompt(cls, v):
+        """Convert string 'true'/'false' to boolean for new client format."""
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return v
 
 
 @app.on_event("startup")
@@ -345,8 +353,8 @@ def resolve_customer_slug_from_payload(payload: Dict[str, Any]) -> Optional[str]
     try:
         if not isinstance(payload, dict):
             return None
-        # Check both customer_slug and slug (alias)
-        slug_value = payload.get("customer_slug") or payload.get("slug")
+        # Check both customer_slug and slug (alias) - prioritize slug for new client format
+        slug_value = payload.get("slug") or payload.get("customer_slug")
         if slug_value:
             return _sanitize_slug(str(slug_value))
         slug_map = _load_customer_slug_map()
