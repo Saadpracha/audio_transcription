@@ -185,6 +185,7 @@ class WebhookPayload(BaseModel):
     contact_last_name: Optional[str] = None
     show_prompt: Optional[bool] = False
     language: Optional[str] = "en"
+    company_name: Optional[str] = None
     no_diarization: Optional[bool] = False
     # allow additional fields; Pydantic will ignore unknowns unless configured otherwise
 
@@ -449,6 +450,14 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "job_id": job_id,
         })
 
+        # Add contact_url if we have both location_id and contact_id
+        try:
+            loc_id = (original_payload or {}).get("location_id") or payload.get("location_id")
+            if loc_id and contact_id:
+                payload["contact_url"] = f"https://app.lead2424.com/v2/location/{loc_id}/detail/{contact_id}"
+        except Exception:
+            pass
+
         # Normalize/echo Google Sheet identifier to help downstream mapping
         try:
             sheet_id = (original_payload or {}).get("googlesheet")
@@ -470,6 +479,24 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "prompt_url": job_data.get("prompt_s3_url"),
         }
         payload["files"] = {k: v for k, v in file_fields.items() if v}
+
+        # Ensure expected fields exist in outbound payload even if missing from input
+        expected_keys = [
+            "audio",
+            "location_id",
+            "contact_id",
+            "contact_first_name",
+            "contact_last_name",
+            "caller_name",
+            "show_prompt",
+            "token",
+            "slug",
+            "googlesheet",
+            "company_name",
+            "language",
+        ]
+        for k in expected_keys:
+            payload.setdefault(k, (original_payload or {}).get(k))
 
         logger.info("Posting GUI link to outbound webhook: %s", url)
         logger.info("Final webhook payload googlesheet: %s", payload.get("googlesheet"))
@@ -1227,6 +1254,35 @@ def webhook_listener(payload: dict):
     logger.info("Received webhook payload type: %s", type(payload))
     logger.info("Received webhook payload googlesheet: %s", payload.get("googlesheet"))
     job_id = str(uuid.uuid4())
+
+    # Normalize/augment payload with fields from nested customData if present
+    try:
+        custom = payload.get("customData") if isinstance(payload, dict) else None
+        if isinstance(custom, dict):
+            # Map common customData fields to top-level if missing
+            payload.setdefault("audio", custom.get("audio"))
+            payload.setdefault("token", custom.get("token"))
+            payload.setdefault("slug", custom.get("slug"))
+            payload.setdefault("googlesheet", custom.get("googlesheet"))
+            payload.setdefault("company_name", custom.get("company_name"))
+            # Caller name nested path: customData.phoneCall.user.name
+            try:
+                phone_call = custom.get("phoneCall") or {}
+                user_obj = phone_call.get("user") or {}
+                caller_name = user_obj.get("name")
+                if caller_name and not payload.get("caller_name"):
+                    payload["caller_name"] = caller_name
+            except Exception:
+                pass
+        # Default show_prompt to true if not provided
+        if "show_prompt" not in payload:
+            payload["show_prompt"] = True
+        # Default language to en if missing
+        if "language" not in payload:
+            payload["language"] = "en"
+    except Exception:
+        # Non-fatal; continue with whatever was provided
+        pass
     contact_id = payload.get("contact_id")
     call_id = payload.get("call_id")
     # Create unique session per call: contact_id + call_id + timestamp
