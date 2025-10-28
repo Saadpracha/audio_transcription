@@ -115,6 +115,7 @@ EXPECTED_INPUT_KEYS = [
     "language",
     "make_webhook_url",
     "client_webhook_url",
+    "date_time",
 ]
 
 
@@ -204,6 +205,7 @@ class WebhookPayload(BaseModel):
     show_prompt: Optional[bool] = False
     language: Optional[str] = "en"
     company_name: Optional[str] = None
+    date_time: Optional[str] = None
     no_diarization: Optional[bool] = False
     # allow additional fields; Pydantic will ignore unknowns unless configured otherwise
 
@@ -522,6 +524,7 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "googlesheet",
             "company_name",
             "language",
+            "date_time",
         ]
         for k in expected_keys:
             payload.setdefault(k, (original_payload or {}).get(k))
@@ -1312,6 +1315,7 @@ def webhook_listener(payload: dict):
             payload.setdefault("slug", custom.get("slug"))
             payload.setdefault("googlesheet", custom.get("googlesheet"))
             payload.setdefault("company_name", custom.get("company_name"))
+            payload.setdefault("date_time", custom.get("date_time"))
             # Location id can be nested under customData.location.id
             try:
                 loc = custom.get("location") or {}
