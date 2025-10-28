@@ -99,6 +99,24 @@ def get_s3_client():
         )
     return _s3_client
 
+# Common field lists for logging
+EXPECTED_INPUT_KEYS = [
+    "audio",
+    "location_id",
+    "contact_id",
+    "contact_first_name",
+    "contact_last_name",
+    "caller_name",
+    "show_prompt",
+    "token",
+    "slug",
+    "googlesheet",
+    "company_name",
+    "language",
+    "make_webhook_url",
+    "client_webhook_url",
+]
+
 
 def add_job_to_queue(job_id: str, payload: dict):
     """Add a job to the processing queue."""
@@ -453,6 +471,16 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
         # Add contact_url if we have both location_id and contact_id
         try:
             loc_id = (original_payload or {}).get("location_id") or payload.get("location_id")
+            # Fallbacks for nested forms
+            if not loc_id:
+                loc_nested = (original_payload or {}).get("location")
+                if isinstance(loc_nested, dict):
+                    loc_id = loc_nested.get("id") or loc_id
+                custom_nested = (original_payload or {}).get("customData")
+                if isinstance(custom_nested, dict):
+                    loc_obj = custom_nested.get("location")
+                    if isinstance(loc_obj, dict):
+                        loc_id = loc_obj.get("id") or loc_id
             if loc_id and contact_id:
                 payload["contact_url"] = f"https://app.lead2424.com/v2/location/{loc_id}/detail/{contact_id}"
         except Exception:
@@ -499,8 +527,14 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             payload.setdefault(k, (original_payload or {}).get(k))
 
         logger.info("Posting GUI link to outbound webhook: %s", url)
-        logger.info("Final webhook payload googlesheet: %s", payload.get("googlesheet"))
-        logger.info("Final webhook payload googlesheet_id: %s", payload.get("googlesheet_id"))
+        logger.info("Final webhook selected fields: %s", {
+            "googlesheet": payload.get("googlesheet"),
+            "googlesheet_id": payload.get("googlesheet_id"),
+            "company_name": payload.get("company_name"),
+            "contact_url": payload.get("contact_url"),
+            "location_id": payload.get("location_id"),
+            "contact_id": payload.get("contact_id"),
+        })
         resp = requests.post(url, json=payload, timeout=20)
         if not resp.ok:
             logger.warning("Outbound webhook post failed: %s %s", resp.status_code, resp.text)
@@ -1249,10 +1283,23 @@ def webhook_listener(payload: dict):
       "queue_position": 1
     }
     """
-    logger.info("Received webhook payload: keys=%s", list(payload.keys()))
-    logger.info("Received webhook payload audio value: %s", payload.get("audio"))
-    logger.info("Received webhook payload type: %s", type(payload))
-    logger.info("Received webhook payload googlesheet: %s", payload.get("googlesheet"))
+    logger.info("Inbound payload keys: %s", list(payload.keys()))
+    # Log selected raw input fields for diagnostics
+    try:
+        raw_log = {k: payload.get(k) for k in EXPECTED_INPUT_KEYS}
+        logger.info("Inbound selected fields (pre-normalization): %s", raw_log)
+        # Nested indicators
+        try:
+            nested_loc = payload.get("location", {}).get("id") if isinstance(payload.get("location"), dict) else None
+        except Exception:
+            nested_loc = None
+        try:
+            cd = payload.get("customData", {}) if isinstance(payload.get("customData"), dict) else {}
+        except Exception:
+            cd = {}
+        logger.info("Inbound nested indicators: location.id=%s, customData.keys=%s", nested_loc, list(cd.keys()) if isinstance(cd, dict) else None)
+    except Exception:
+        pass
     job_id = str(uuid.uuid4())
 
     # Normalize/augment payload with fields from nested customData if present
@@ -1265,6 +1312,14 @@ def webhook_listener(payload: dict):
             payload.setdefault("slug", custom.get("slug"))
             payload.setdefault("googlesheet", custom.get("googlesheet"))
             payload.setdefault("company_name", custom.get("company_name"))
+            # Location id can be nested under customData.location.id
+            try:
+                loc = custom.get("location") or {}
+                loc_id = loc.get("id")
+                if loc_id and not payload.get("location_id"):
+                    payload["location_id"] = loc_id
+            except Exception:
+                pass
             # Caller name nested path: customData.phoneCall.user.name
             try:
                 phone_call = custom.get("phoneCall") or {}
@@ -1274,6 +1329,13 @@ def webhook_listener(payload: dict):
                     payload["caller_name"] = caller_name
             except Exception:
                 pass
+        # Also support top-level nested location.id
+        try:
+            top_loc = payload.get("location") if isinstance(payload, dict) else None
+            if isinstance(top_loc, dict) and top_loc.get("id") and not payload.get("location_id"):
+                payload["location_id"] = top_loc.get("id")
+        except Exception:
+            pass
         # Default show_prompt to true if not provided
         if "show_prompt" not in payload:
             payload["show_prompt"] = True
@@ -1313,6 +1375,13 @@ def webhook_listener(payload: dict):
     # Get current queue position
     current_position = jobs[job_id].get("queue_position", 0)
     
+    # Log normalized input snapshot that will drive processing
+    try:
+        normalized_log = {k: payload.get(k) for k in EXPECTED_INPUT_KEYS}
+        logger.info("Inbound selected fields (normalized): %s", normalized_log)
+    except Exception:
+        pass
+
     return {
         "job_id": job_id, 
         "status_url": f"/jobs/{job_id}",
