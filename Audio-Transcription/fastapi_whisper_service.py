@@ -17,7 +17,7 @@ except Exception:
     ai_summary = None  # type: ignore
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from datetime import datetime, timezone
@@ -55,7 +55,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 S3_BUCKET = os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION")
-PUBLIC_APP_BASE_URL = os.getenv("PUBLIC_APP_BASE_URL", "http://files.lead2424.com")
+PUBLIC_APP_BASE_URL = os.getenv("PUBLIC_APP_BASE_URL", "https://files.lead2424.com")
 S3_CDN_BASE_URL = os.getenv("S3_CDN_BASE_URL", "https://files.lead2424.com")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -183,6 +183,38 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
+def _compute_canonical_host() -> str:
+    try:
+        base = (PUBLIC_APP_BASE_URL or "").strip().rstrip("/")
+        if base.startswith("http://"):
+            return base[len("http://"):]
+        if base.startswith("https://"):
+            return base[len("https://"):]
+        return base
+    except Exception:
+        return ""
+
+_CANONICAL_HOST = _compute_canonical_host()
+
+@app.middleware("http")
+async def enforce_canonical_host(request: Request, call_next):
+    """Redirect /view-session* requests to the canonical host if accessed via IP/other host.
+
+    This ensures end-user links always use files.lead2424.com (or PUBLIC_APP_BASE_URL).
+    """
+    try:
+        host = request.headers.get("host", "")
+        path = request.url.path or ""
+        if _CANONICAL_HOST and host and host != _CANONICAL_HOST and path.startswith("/view-session"):
+            query = request.url.query
+            target = f"{PUBLIC_APP_BASE_URL.rstrip('/')}{path}"
+            if query:
+                target = f"{target}?{query}"
+            return RedirectResponse(url=target, status_code=308)
+    except Exception:
+        pass
+    return await call_next(request)
 
 class WebhookPayload(BaseModel):
     audio: str
