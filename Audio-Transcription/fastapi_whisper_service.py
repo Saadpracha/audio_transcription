@@ -55,6 +55,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 S3_BUCKET = os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION")
+PUBLIC_APP_BASE_URL = os.getenv("PUBLIC_APP_BASE_URL", "http://files.lead2424.com")
+S3_CDN_BASE_URL = os.getenv("S3_CDN_BASE_URL", "https://files.lead2424.com")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -421,7 +423,7 @@ def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = Non
     """Construct a GUI link for the given session/contact id using PUBLIC_APP_BASE_URL.
     session_id should be the entity_id (with timestamp) to match S3 folder structure."""
     try:
-        gui_base = os.getenv("PUBLIC_APP_BASE_URL")
+        gui_base = os.getenv("PUBLIC_APP_BASE_URL", PUBLIC_APP_BASE_URL)
         logger.info("Building GUI link - session_id: %s, customer_slug: %s, gui_base: %s", session_id, customer_slug, gui_base)
         if session_id and gui_base:
             if customer_slug:
@@ -459,6 +461,16 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
         # Start with original payload (what Make.com sent us) to echo data back
         payload: Dict[str, Any] = dict(original_payload or {})
 
+        # Helper to pick first non-empty value
+        def _coalesce(*values):
+            for v in values:
+                if isinstance(v, str):
+                    if v.strip() != "":
+                        return v
+                elif v is not None:
+                    return v
+            return values[0] if values else None
+
         # Add/override our fields
         payload.update({
             "session_id": session_id,
@@ -470,9 +482,45 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "job_id": job_id,
         })
 
+        # Coalesce key fields to ensure non-empty values
+        try:
+            cd = (original_payload or {}).get("customData") if isinstance((original_payload or {}).get("customData"), dict) else {}
+        except Exception:
+            cd = {}
+        # location_id from multiple places
+        loc_from_nested = None
+        try:
+            loc_obj = (original_payload or {}).get("location")
+            if isinstance(loc_obj, dict):
+                loc_from_nested = loc_obj.get("id")
+        except Exception:
+            pass
+        try:
+            cd_loc = cd.get("location") if isinstance(cd, dict) else None
+            if isinstance(cd_loc, dict) and not loc_from_nested:
+                loc_from_nested = cd_loc.get("id")
+        except Exception:
+            pass
+
+        payload["location_id"] = _coalesce(
+            payload.get("location_id"),
+            (original_payload or {}).get("location_id"),
+            loc_from_nested,
+        )
+        payload["company_name"] = _coalesce(
+            payload.get("company_name"),
+            (original_payload or {}).get("company_name"),
+            cd.get("company_name") if isinstance(cd, dict) else None,
+        )
+        payload["date_time"] = _coalesce(
+            payload.get("date_time"),
+            (original_payload or {}).get("date_time"),
+            cd.get("date_time") if isinstance(cd, dict) else None,
+        )
+
         # Add contact_url if we have both location_id and contact_id
         try:
-            loc_id = (original_payload or {}).get("location_id") or payload.get("location_id")
+            loc_id = payload.get("location_id") or (original_payload or {}).get("location_id")
             # Fallbacks for nested forms
             if not loc_id:
                 loc_nested = (original_payload or {}).get("location")
@@ -537,6 +585,7 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "contact_url": payload.get("contact_url"),
             "location_id": payload.get("location_id"),
             "contact_id": payload.get("contact_id"),
+            "date_time": payload.get("date_time"),
         })
         resp = requests.post(url, json=payload, timeout=20)
         if not resp.ok:
@@ -549,6 +598,13 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
         return False
 
 def _public_s3_base_url() -> Optional[str]:
+    # Prefer CDN base if configured
+    try:
+        cdn = (S3_CDN_BASE_URL or "").strip()
+        if cdn:
+            return cdn.rstrip('/')
+    except Exception:
+        pass
     if not S3_BUCKET:
         return None
     region = AWS_REGION or 'us-east-1'
