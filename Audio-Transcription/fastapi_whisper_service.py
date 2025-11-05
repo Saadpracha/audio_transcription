@@ -56,6 +56,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 S3_BUCKET = os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION")
 PUBLIC_APP_BASE_URL = os.getenv("PUBLIC_APP_BASE_URL", "https://files.lead2424.com")
+IP_APP_BASE_URL = os.getenv("IP_APP_BASE_URL", "http://35.183.3.7:8088")
 S3_CDN_BASE_URL = os.getenv("S3_CDN_BASE_URL", "https://files.lead2424.com")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -468,6 +469,33 @@ def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = Non
         logger.warning("Error building GUI link: %s", e)
     return None
 
+def build_gui_links(session_id: Optional[str], customer_slug: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """Construct both domain and IP GUI links for the given session/contact id.
+    Returns a dict with 'gui_link' (domain) and 'gui_link_ip' (IP address).
+    session_id should be the entity_id (with timestamp) to match S3 folder structure."""
+    result = {"gui_link": None, "gui_link_ip": None}
+    try:
+        # Domain link (using PUBLIC_APP_BASE_URL)
+        gui_base = os.getenv("PUBLIC_APP_BASE_URL", PUBLIC_APP_BASE_URL)
+        if session_id and gui_base:
+            if customer_slug:
+                result["gui_link"] = f"{gui_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
+            else:
+                result["gui_link"] = f"{gui_base.rstrip('/')}/view-session/{session_id}"
+        
+        # IP link (using IP_APP_BASE_URL)
+        ip_base = os.getenv("IP_APP_BASE_URL", IP_APP_BASE_URL)
+        if session_id and ip_base:
+            if customer_slug:
+                result["gui_link_ip"] = f"{ip_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
+            else:
+                result["gui_link_ip"] = f"{ip_base.rstrip('/')}/view-session/{session_id}"
+        
+        logger.info("Generated GUI links - domain: %s, IP: %s", result["gui_link"], result["gui_link_ip"])
+    except Exception as e:
+        logger.warning("Error building GUI links: %s", e)
+    return result
+
 def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Optional[str], webhook_url: Optional[str] = None, original_payload: Optional[dict] = None, job_id: Optional[str] = None) -> bool:
     """Send the GUI link (and basic metadata) to a Make.com webhook for Sheets/Excel automations.
 
@@ -485,9 +513,14 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
         logger.info("Webhook - job_data entity_id: %s", job_data.get("entity_id"))
         logger.info("Webhook - session_id for GUI: %s", session_id)
         customer_slug = resolve_customer_slug_from_payload(original_payload or {})
-        gui_link = build_gui_link(session_id, customer_slug)
-        if not gui_link:
-            logger.warning("Could not build GUI link for Make.com webhook; missing session_id or PUBLIC_APP_BASE_URL")
+        
+        # Build both domain and IP GUI links
+        gui_links = build_gui_links(session_id, customer_slug)
+        gui_link = gui_links.get("gui_link")
+        gui_link_ip = gui_links.get("gui_link_ip")
+        
+        if not gui_link and not gui_link_ip:
+            logger.warning("Could not build GUI links for Make.com webhook; missing session_id or base URLs")
             return False
 
         # Start with original payload (what Make.com sent us) to echo data back
@@ -509,7 +542,8 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "entity_id": job_data.get("entity_id"),  # unique per call
             "contact_id": contact_id,
             "call_id": call_id,
-            "gui_link": gui_link,
+            "gui_link": gui_link,  # Domain link (files.lead2424.com)
+            "gui_link_ip": gui_link_ip,  # IP address link (35.183.3.7:8088)
             "created_at": int(time.time()),
             "job_id": job_id,
         })
