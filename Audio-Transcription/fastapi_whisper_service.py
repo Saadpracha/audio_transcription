@@ -475,16 +475,31 @@ def build_gui_links(session_id: Optional[str], customer_slug: Optional[str] = No
     session_id should be the entity_id (with timestamp) to match S3 folder structure."""
     result = {"gui_link": None, "gui_link_ip": None}
     try:
-        # Domain link (using PUBLIC_APP_BASE_URL)
-        gui_base = os.getenv("PUBLIC_APP_BASE_URL", PUBLIC_APP_BASE_URL)
+        # Domain link (using PUBLIC_APP_BASE_URL) - always use domain, not IP
+        # Use module-level constant to ensure we get the domain, not env var which might be IP
+        gui_base = PUBLIC_APP_BASE_URL
+        # Only override with env var if it's explicitly set and contains a domain (not IP)
+        env_gui_base = os.getenv("PUBLIC_APP_BASE_URL")
+        if env_gui_base:
+            # Check if env var is an IP address - if so, ignore it and use default
+            # Extract host part (remove protocol and port)
+            host_part = env_gui_base.replace('http://', '').replace('https://', '').split(':')[0].split('/')[0]
+            # Check if it's an IP address pattern (4 groups of digits separated by dots)
+            if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host_part):
+                gui_base = env_gui_base
         if session_id and gui_base:
             if customer_slug:
                 result["gui_link"] = f"{gui_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
             else:
                 result["gui_link"] = f"{gui_base.rstrip('/')}/view-session/{session_id}"
         
-        # IP link (using IP_APP_BASE_URL)
-        ip_base = os.getenv("IP_APP_BASE_URL", IP_APP_BASE_URL)
+        # IP link (using IP_APP_BASE_URL) - always use IP address
+        # Use module-level constant to ensure we get the IP
+        ip_base = IP_APP_BASE_URL
+        # Only override with env var if it's explicitly set
+        env_ip_base = os.getenv("IP_APP_BASE_URL")
+        if env_ip_base:
+            ip_base = env_ip_base
         if session_id and ip_base:
             if customer_slug:
                 result["gui_link_ip"] = f"{ip_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
@@ -492,6 +507,7 @@ def build_gui_links(session_id: Optional[str], customer_slug: Optional[str] = No
                 result["gui_link_ip"] = f"{ip_base.rstrip('/')}/view-session/{session_id}"
         
         logger.info("Generated GUI links - domain: %s, IP: %s", result["gui_link"], result["gui_link_ip"])
+        logger.info("GUI link base: %s, IP link base: %s", gui_base, ip_base)
     except Exception as e:
         logger.warning("Error building GUI links: %s", e)
     return result
