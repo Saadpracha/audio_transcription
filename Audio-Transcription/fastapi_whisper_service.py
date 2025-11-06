@@ -55,8 +55,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 S3_BUCKET = os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION")
-PUBLIC_APP_BASE_URL = os.getenv("PUBLIC_APP_BASE_URL", "https://files.lead2424.com")
-IP_APP_BASE_URL = os.getenv("IP_APP_BASE_URL", "http://35.183.3.7:8088")
+PUBLIC_APP_BASE_URL = "https://files.lead2424.com"  # Default domain - not reading from .env
+IP_APP_BASE_URL = "http://35.183.3.7:8088"  # Default IP - not reading from .env
 S3_CDN_BASE_URL = os.getenv("S3_CDN_BASE_URL", "https://files.lead2424.com")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -430,7 +430,7 @@ def send_file_links_note(contact_id: str, job_data: dict, access_token: str) -> 
     # Get GUI link for the contact/session
     # Use entity_id for GUI link (with timestamp) to match S3 folder structure
     session_id = job_data.get("entity_id") or contact_id or job_data.get("call_id")
-    gui_base = os.getenv("PUBLIC_APP_BASE_URL")  # e.g., https://my-domain.com
+    gui_base = PUBLIC_APP_BASE_URL  # Use default domain from code
     
     # Debug logging
     logger.info(f"Creating GUI link - contact_id: '{contact_id}', session_id: '{session_id}', gui_base: '{gui_base}'")
@@ -456,7 +456,7 @@ def build_gui_link(session_id: Optional[str], customer_slug: Optional[str] = Non
     """Construct a GUI link for the given session/contact id using PUBLIC_APP_BASE_URL.
     session_id should be the entity_id (with timestamp) to match S3 folder structure."""
     try:
-        gui_base = os.getenv("PUBLIC_APP_BASE_URL", PUBLIC_APP_BASE_URL)
+        gui_base = PUBLIC_APP_BASE_URL  # Use default domain from code
         logger.info("Building GUI link - session_id: %s, customer_slug: %s, gui_base: %s", session_id, customer_slug, gui_base)
         if session_id and gui_base:
             if customer_slug:
@@ -475,31 +475,16 @@ def build_gui_links(session_id: Optional[str], customer_slug: Optional[str] = No
     session_id should be the entity_id (with timestamp) to match S3 folder structure."""
     result = {"gui_link": None, "gui_link_ip": None}
     try:
-        # Domain link (using PUBLIC_APP_BASE_URL) - always use domain, not IP
-        # Use module-level constant to ensure we get the domain, not env var which might be IP
+        # Domain link (using PUBLIC_APP_BASE_URL) - use default domain from code
         gui_base = PUBLIC_APP_BASE_URL
-        # Only override with env var if it's explicitly set and contains a domain (not IP)
-        env_gui_base = os.getenv("PUBLIC_APP_BASE_URL")
-        if env_gui_base:
-            # Check if env var is an IP address - if so, ignore it and use default
-            # Extract host part (remove protocol and port)
-            host_part = env_gui_base.replace('http://', '').replace('https://', '').split(':')[0].split('/')[0]
-            # Check if it's an IP address pattern (4 groups of digits separated by dots)
-            if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host_part):
-                gui_base = env_gui_base
         if session_id and gui_base:
             if customer_slug:
                 result["gui_link"] = f"{gui_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
             else:
                 result["gui_link"] = f"{gui_base.rstrip('/')}/view-session/{session_id}"
         
-        # IP link (using IP_APP_BASE_URL) - always use IP address
-        # Use module-level constant to ensure we get the IP
+        # IP link (using IP_APP_BASE_URL) - use default IP from code
         ip_base = IP_APP_BASE_URL
-        # Only override with env var if it's explicitly set
-        env_ip_base = os.getenv("IP_APP_BASE_URL")
-        if env_ip_base:
-            ip_base = env_ip_base
         if session_id and ip_base:
             if customer_slug:
                 result["gui_link_ip"] = f"{ip_base.rstrip('/')}/view-session/{customer_slug}/{session_id}"
