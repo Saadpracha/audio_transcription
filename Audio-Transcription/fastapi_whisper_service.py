@@ -700,6 +700,7 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "location_id": payload.get("location_id"),
             "contact_id": payload.get("contact_id"),
             "date_time": payload.get("date_time"),
+            "audio_length": payload.get("audio_length"),
         })
         resp = requests.post(url, json=payload, timeout=20)
         if not resp.ok:
