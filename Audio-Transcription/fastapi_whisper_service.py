@@ -10,6 +10,8 @@ from typing import Optional, Dict, Any
 import sys
 import subprocess
 import shutil
+import contextlib
+import wave
 from collections import deque
 try:
     import ai_summary  # type: ignore
@@ -273,6 +275,50 @@ def detect_extension_from_content_type(content_type: str) -> str:
     if "ogg" in content_type or "opus" in content_type:
         return "ogg"
     return "mp3"
+
+
+def probe_audio_duration_seconds(file_path: Path) -> Optional[float]:
+    """Best-effort duration probe using mutagen -> ffprobe -> wave fallback."""
+    # Try mutagen if available
+    try:
+        import mutagen  # type: ignore
+        audio = mutagen.File(str(file_path))
+        length = getattr(getattr(audio, "info", None), "length", None)
+        if length:
+            return float(length)
+    except Exception:
+        pass
+
+    # Try ffprobe if installed
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(file_path),
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+        duration = float(out.strip())
+        if duration > 0:
+            return duration
+    except Exception:
+        pass
+
+    # Fallback for WAV using wave module
+    try:
+        with contextlib.closing(wave.open(str(file_path), "rb")) as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate()
+            if rate:
+                return frames / float(rate)
+    except Exception:
+        pass
+
+    return None
 
 
 def download_audio(url: str, dest_path: Path, auth: Optional[tuple] = None, headers: Optional[dict] = None, timeout: int = 60):
@@ -547,6 +593,7 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "gui_link_ip": gui_link_ip,  # IP address link (35.183.3.7:8088)
             "created_at": int(time.time()),
             "job_id": job_id,
+            "audio_length": job_data.get("audio_length"),  # seconds (float) if probed
         })
 
         # Coalesce key fields to ensure non-empty values
@@ -1158,6 +1205,14 @@ def process_job(job_id: str, payload: dict):
             audio_auth = (aa.get("username"), aa.get("password"))
         headers = payload.get("audio_headers")
         local_path = download_audio(audio_url, local_path, auth=audio_auth, headers=headers)
+        # Probe audio duration
+        try:
+            audio_length = probe_audio_duration_seconds(local_path)
+            if audio_length is not None:
+                jobs[job_id]["audio_length"] = audio_length
+                logger.info("Probed audio duration (s): %s", audio_length)
+        except Exception as dur_ex:
+            logger.warning("Failed to probe audio duration: %s", dur_ex)
 
         # Run your CLI transcriber script
         jobs[job_id]["status"] = "transcribing"
