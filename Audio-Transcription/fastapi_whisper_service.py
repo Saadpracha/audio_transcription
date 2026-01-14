@@ -57,7 +57,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 S3_BUCKET = os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION")
 PUBLIC_APP_BASE_URL = "https://files.lead2424.com"  # Default domain - not reading from .env
-IP_APP_BASE_URL = "http://35.183.3.7:8088"  # Default IP - not reading from .env
+IP_APP_BASE_URL = "http://16.52.197.95:8088"  # Default IP - not reading from .env
 S3_CDN_BASE_URL = os.getenv("S3_CDN_BASE_URL", "https://files.lead2424.com")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -567,7 +567,7 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "contact_id": contact_id,
             "call_id": call_id,
             "gui_link": gui_link,  # Domain link (files.lead2424.com)
-            "gui_link_ip": gui_link_ip,  # IP address link (35.183.3.7:8088)
+            "gui_link_ip": gui_link_ip,  # IP address link (16.52.197.95:8088)
             "created_at": int(time.time()),
             "job_id": job_id,
             "audio_length": job_data.get("audio_length"),  # formatted mm:ss string
