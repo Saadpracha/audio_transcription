@@ -1234,7 +1234,9 @@ def process_job(job_id: str, payload: dict):
         call_to_action_path = None
         prompt_path = None
         try:
+            logger.info("Checking if summarization is available...")
             if ai_summary is not None and hasattr(ai_summary, "process_transcript"):
+                logger.info("Starting summarization step...")
                 jobs[job_id]["status"] = "summarizing"
                 # Use a proper base output file so ai_summary writes:
                 # <base>.json, <base>_summary.json, <base>_call_to_action.json
@@ -1259,6 +1261,7 @@ def process_job(job_id: str, payload: dict):
                 contact_last_name = payload.get("contact_last_name") or ""
                 
                 # Process transcript with caller information
+                logger.info("Calling ai_summary.process_transcript...")
                 ai_summary.process_transcript(
                     str(transcript_path), 
                     str(base_output_path), 
@@ -1267,9 +1270,11 @@ def process_job(job_id: str, payload: dict):
                     split_first,
                     split_last
                 )
+                logger.info("ai_summary.process_transcript completed")
                 
                 # Expected generated files
                 summary_path = run_output_dir / f"{entity_id}_summary.json"
+                logger.info("Summary file expected at: %s", summary_path)
                 
                 # Call to action data is now included in summary file
                 call_to_action_path = None
@@ -1282,6 +1287,7 @@ def process_job(job_id: str, payload: dict):
                     
             else:
                 logger.warning("ai_summary.process_transcript not available; skipping summarization")
+            logger.info("Summarization step completed (or skipped)")
         except Exception as summarize_ex:
             logger.exception("Summarization step failed: %s", summarize_ex)
 
@@ -1312,6 +1318,7 @@ def process_job(job_id: str, payload: dict):
             logger.warning("Failed to inject metadata into summary file: %s", meta_ex)
 
         # Upload files to S3
+        logger.info("Starting S3 upload step...")
         jobs[job_id]["status"] = "uploading_to_s3"
         # Use customer slug in S3 path if available: audio/{slug}/{contact_id}/
         customer_slug = jobs[job_id].get("customer_slug")
