@@ -1,4 +1,3 @@
-<<<<<<< Current (Your changes)
 import os
 import uuid
 import json
@@ -1699,5 +1698,3 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("fastapi_whisper_service:app", host="0.0.0.0", port=int(os.getenv("PORT", 8088)), log_level="info")
-=======
->>>>>>> Incoming (Background Agent changes)
