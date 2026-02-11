@@ -118,6 +118,7 @@ EXPECTED_INPUT_KEYS = [
     "googlesheet",
     "company_name",
     "language",
+    "make_url_out",
     "make_webhook_url",
     "client_webhook_url",
     "date_time",
@@ -245,6 +246,7 @@ class WebhookPayload(BaseModel):
     date_time: Optional[str] = None
     no_diarization: Optional[bool] = False
     # allow additional fields; Pydantic will ignore unknowns unless configured otherwise
+    make_url_out: Optional[str] = None  # optional custom outbound Make.com URL
 
     @validator('show_prompt', pre=True)
     def convert_show_prompt(cls, v):
@@ -1360,8 +1362,12 @@ def process_job(job_id: str, payload: dict):
         try:
             # Collect all outbound webhooks: env default, make.com, client-specific, and extras
             webhook_urls = []
+            # Prefer per-request custom outbound URL over env default
+            primary_out_url = payload.get("make_url_out")
             env_url = os.getenv("MAKE_WEBHOOK_URL")
-            if env_url:
+            if primary_out_url:
+                webhook_urls.append(primary_out_url)
+            elif env_url:
                 webhook_urls.append(env_url)
             if payload.get("make_webhook_url"):
                 webhook_urls.append(payload.get("make_webhook_url"))
@@ -1481,6 +1487,7 @@ def webhook_listener(payload: dict):
             payload.setdefault("googlesheet", custom.get("googlesheet"))
             payload.setdefault("company_name", custom.get("company_name"))
             payload.setdefault("date_time", custom.get("date_time"))
+            payload.setdefault("make_url_out", custom.get("make_url_out"))
             # Location id can be nested under customData.location.id
             try:
                 loc = custom.get("location") or {}
